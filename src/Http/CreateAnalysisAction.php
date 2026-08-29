@@ -31,16 +31,15 @@ final class CreateAnalysisAction
     /**
      * idempotency metadataと解析結果の引き渡しバッファの保持期間。
      *
-     * network timeoutからの再送はこの範囲で起きる想定である。長くするほど
-     * 解析結果本文がServer上に残る時間が延びるため、必要最小限にしている。
+     * 解析完了後はこの時間で失効し、以降は同じIdempotency-Keyの再送へ結果を
+     * 返さない。network timeoutからの再送はこの範囲で起きる想定である。
+     * 長くするほど解析結果本文がServer上に残る時間が延びるため、必要最小限に
+     * している。
+     *
+     * 完了しなかったrequestも、取得時刻からこの時間で失効する。失効するまでは
+     * 同じkeyへ新しいAI呼び出し権を与えない。
      */
     public const RETENTION_SECONDS = 1800;
-
-    /**
-     * 同期処理1回に許す上限。これを超えて完了しない解析は、処理が中断した
-     * ものとみなして同じIdempotency-Keyでの再送が引き継ぐ。
-     */
-    public const PROCESSING_TIMEOUT_SECONDS = 120;
 
     private const RETRY_AFTER_IN_PROGRESS_SECONDS = 15;
 
@@ -72,6 +71,8 @@ final class CreateAnalysisAction
         $analysisRequest = self::readAnalysisRequest($request);
 
         $now = new DateTimeImmutable('now');
+        // 失効した本文を返さないよう、判定の前に削除する。requestが来ない
+        // 期間の削除はXServer Cron（bin/prune-expired-analyses.php）が行う。
         $this->analysisRequests->purgeExpired($now);
 
         $claim = $this->analysisRequests->claim(
@@ -79,10 +80,7 @@ final class CreateAnalysisAction
             $idempotencyKey,
             $analysisRequest->fingerprint(),
             $now,
-            $now->modify(sprintf('+%d seconds', self::RETENTION_SECONDS)),
-            $now->modify(
-                sprintf('-%d seconds', self::PROCESSING_TIMEOUT_SECONDS),
-            ),
+            self::expiry($now),
         );
 
         if ($claim === AnalysisClaim::KeyReuse) {
@@ -115,6 +113,7 @@ final class CreateAnalysisAction
             $installationId,
             $idempotencyKey,
             $analysisRequest,
+            $now,
         );
 
         return JsonResponse::writeBody($response, $responseBody);
@@ -127,12 +126,17 @@ final class CreateAnalysisAction
         string $installationId,
         string $idempotencyKey,
         AnalysisRequest $analysisRequest,
+        DateTimeImmutable $claimedAt,
     ): string {
         try {
             $analysis = $this->analyzer->analyze($analysisRequest);
         } catch (Throwable $exception) {
             // 解析できなかったIdempotency-Keyを占有したままにしない。
-            $this->analysisRequests->release($installationId, $idempotencyKey);
+            $this->analysisRequests->release(
+                $installationId,
+                $idempotencyKey,
+                $claimedAt,
+            );
 
             throw $exception;
         }
@@ -152,14 +156,22 @@ final class CreateAnalysisAction
             ],
         ]);
 
+        // 保持期間の起点は解析完了時に揃える。
+        $completedAt = new DateTimeImmutable('now');
         $this->analysisRequests->complete(
             $installationId,
             $idempotencyKey,
             $responseBody,
-            new DateTimeImmutable('now'),
+            $completedAt,
+            self::expiry($completedAt),
         );
 
         return $responseBody;
+    }
+
+    private static function expiry(DateTimeImmutable $from): DateTimeImmutable
+    {
+        return $from->modify(sprintf('+%d seconds', self::RETENTION_SECONDS));
     }
 
     private function readDelivery(

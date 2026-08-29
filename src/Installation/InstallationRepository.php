@@ -11,8 +11,11 @@ use PDO;
 /**
  * 匿名installationの登録と認証。
  *
- * 保持するのはinstallation識別子、API keyのhash、作成日時、最終利用日時だけで、
+ * 保持するのはServer内部のinstallation識別子、API keyのhash、作成日時だけである。
  * 名前・メールアドレス・profile・timezoneは保持しない。
+ *
+ * installation識別子はクライアントへ返さない。Androidが送るのはAPI keyだけで、
+ * 識別子を送る用途が無いためである。
  */
 final class InstallationRepository
 {
@@ -23,60 +26,41 @@ final class InstallationRepository
     {
     }
 
-    public function register(DateTimeImmutable $now): IssuedInstallation
+    /**
+     * installationを登録し、発行したAPI keyの平文を返す。
+     *
+     * Serverはhashしか保存しないため、平文を返せるのは登録時だけである。
+     */
+    public function register(DateTimeImmutable $now): string
     {
-        $installation = new IssuedInstallation(
-            self::generateId(),
-            ApiKey::generate(),
-        );
+        $apiKey = ApiKey::generate();
 
         ($this->connection)()
             ->prepare(
-                // PDOのemulate preparesを無効にしているため、同じ名前付き
-                // パラメータを1つの文で二度使えない。
-                'INSERT INTO installations
-                    (id, api_key_hash, created_at, last_used_at)
-                 VALUES (:id, :api_key_hash, :created_at, :last_used_at)',
+                'INSERT INTO installations (id, api_key_hash, created_at)
+                 VALUES (:id, :api_key_hash, :created_at)',
             )
             ->execute([
-                'id' => $installation->id,
-                'api_key_hash' => ApiKey::hash($installation->apiKey),
-                'created_at' => self::formatTimestamp($now),
-                'last_used_at' => self::formatTimestamp($now),
+                'id' => self::generateId(),
+                'api_key_hash' => ApiKey::hash($apiKey),
+                'created_at' => $now->format('Y-m-d H:i:s.u'),
             ]);
 
-        return $installation;
+        return $apiKey;
     }
 
     /**
      * API keyに対応するinstallation識別子を返す。該当しない場合はnullを返す。
      */
-    public function authenticate(
-        string $apiKey,
-        DateTimeImmutable $now,
-    ): ?string {
-        $connection = ($this->connection)();
-        $statement = $connection->prepare(
+    public function authenticate(string $apiKey): ?string
+    {
+        $statement = ($this->connection)()->prepare(
             'SELECT id FROM installations WHERE api_key_hash = :api_key_hash',
         );
         $statement->execute(['api_key_hash' => ApiKey::hash($apiKey)]);
         $installationId = $statement->fetchColumn();
 
-        if (!is_string($installationId)) {
-            return null;
-        }
-
-        // 使われなくなったinstallationを判別できるようにするための最小情報。
-        $connection
-            ->prepare(
-                'UPDATE installations SET last_used_at = :now WHERE id = :id',
-            )
-            ->execute([
-                'id' => $installationId,
-                'now' => self::formatTimestamp($now),
-            ]);
-
-        return $installationId;
+        return is_string($installationId) ? $installationId : null;
     }
 
     private static function generateId(): string
@@ -92,10 +76,5 @@ final class InstallationRepository
             bin2hex(substr($bytes, 8, 2)),
             bin2hex(substr($bytes, 10, 6)),
         ]);
-    }
-
-    private static function formatTimestamp(DateTimeImmutable $moment): string
-    {
-        return $moment->format('Y-m-d H:i:s.u');
     }
 }

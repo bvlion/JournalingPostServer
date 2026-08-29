@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace JournalingPostServer\Http;
 
-use DateTimeImmutable;
 use JournalingPostServer\Installation\ApiKey;
 use JournalingPostServer\Installation\InstallationRepository;
 use Psr\Http\Message\ResponseInterface;
@@ -39,10 +38,7 @@ final class AuthenticationMiddleware implements MiddlewareInterface
             throw self::unauthorized();
         }
 
-        $installationId = $this->installations->authenticate(
-            $apiKey,
-            new DateTimeImmutable('now'),
-        );
+        $installationId = $this->installations->authenticate($apiKey);
 
         if ($installationId === null) {
             throw self::unauthorized();

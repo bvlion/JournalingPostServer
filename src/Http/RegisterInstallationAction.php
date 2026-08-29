@@ -13,7 +13,10 @@ use Psr\Http\Message\ServerRequestInterface;
  * `POST /v1/installations`
  *
  * 匿名installationを登録し、Hosted APIの認証情報を発行する。account作成は伴わず、
- * requestは本文を必要としない。Androidは発行された値を端末へ保存する。
+ * requestは本文を必要としない。Androidが保存するのはAPI keyだけである。
+ *
+ * Server内部のinstallation識別子は返さない。Androidから送る用途が無く、返せば
+ * 端末側に不要な状態が増えるためである。
  *
  * API keyの平文を返すのはこの応答だけである。Serverはhashしか保存しないため、
  * 端末が失った場合は再登録して新しいinstallationになる。
@@ -35,18 +38,11 @@ final class RegisterInstallationAction
         ResponseInterface $response,
         array $arguments,
     ): ResponseInterface {
-        $installation = $this->installations->register(
-            new DateTimeImmutable('now'),
-        );
+        $apiKey = $this->installations->register(new DateTimeImmutable('now'));
 
         return JsonResponse::write(
             $response->withStatus(201),
-            [
-                'installation' => [
-                    'id' => $installation->id,
-                    'apiKey' => $installation->apiKey,
-                ],
-            ],
+            ['installation' => ['apiKey' => $apiKey]],
         );
     }
 }

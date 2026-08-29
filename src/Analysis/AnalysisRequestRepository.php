@@ -10,11 +10,12 @@ use PDO;
 use PDOException;
 
 /**
- * 解析requestのidempotency metadataと、結果の引き渡しバッファを扱う。
+ * 解析requestのidempotency metadataと、解析結果の引き渡しバッファを扱う。
  *
- * 保持するのはinstallation識別子・Idempotency-Key・requestのhash・時刻だけで、
- * JournalEntry本文は保持しない。解析結果本文は`analysis_deliveries`へ分離し、
- * 保持期間を過ぎた`analysis_requests`の行と一緒に（ON DELETE CASCADE）消える。
+ * metadataとして保持するのはinstallation識別子・Idempotency-Key・requestのhash・
+ * 時刻だけで、JournalEntry本文は保持しない。解析結果本文は
+ * `analysis_deliveries`へ分離し、失効した`analysis_requests`の行と一緒に
+ * （ON DELETE CASCADE）削除される。
  */
 final class AnalysisRequestRepository
 {
@@ -30,25 +31,32 @@ final class AnalysisRequestRepository
     }
 
     /**
-     * 保持期間を過ぎたidempotency metadataと引き渡しバッファを削除する。
+     * 失効したidempotency metadataと引き渡しバッファを削除し、削除件数を返す。
      *
-     * 解析requestの度に実行する。Cronを増やさずに保持期間の上限を守るためで、
-     * Issue #3のCronへ依存しない。
+     * 解析requestの度と、`bin/prune-expired-analyses.php`（XServer Cron）から
+     * 呼ぶ。requestが来なくなっても、失効した解析結果本文がDBへ残り続けない
+     * ようにするため、両方が必要である。
      */
-    public function purgeExpired(DateTimeImmutable $now): void
+    public function purgeExpired(DateTimeImmutable $now): int
     {
-        ($this->connection)()
-            ->prepare(
-                'DELETE FROM analysis_requests WHERE expires_at <= :now',
-            )
-            ->execute(['now' => self::formatTimestamp($now)]);
+        $statement = ($this->connection)()->prepare(
+            'DELETE FROM analysis_requests WHERE expires_at <= :now',
+        );
+        $statement->execute(['now' => self::formatTimestamp($now)]);
+
+        return $statement->rowCount();
     }
 
     /**
      * AI呼び出し権を取得する。
      *
-     * @param DateTimeImmutable $abandonedBefore この時刻より前に開始したまま
-     *        完了していないrequestは、処理が中断したものとみなして引き継ぐ。
+     * 完了していない同じkeyのrequestが残っている間は`InProgress`を返し、
+     * 新しいAI呼び出し権を与えない。経過時間だけを根拠に引き継ぐと、前の処理が
+     * 動き続けている場合に同じ解析を二重にAIへ投げるためである。
+     *
+     * 前の処理がresponseを返さずに終わった場合、そのkeyは`expires_at`まで
+     * 使えない。AI provider側のtimeout特性を踏まえた復帰の制御は、実providerを
+     * 実装するIssue #4で判断する。
      */
     public function claim(
         string $installationId,
@@ -56,7 +64,6 @@ final class AnalysisRequestRepository
         string $fingerprint,
         DateTimeImmutable $now,
         DateTimeImmutable $expiresAt,
-        DateTimeImmutable $abandonedBefore,
     ): AnalysisClaim {
         // 既存行の検出と読み出しの間で、別requestのpurgeによりその行が消えると
         // どちらの判定もできない。その場合だけ取得をやり直す。
@@ -67,7 +74,6 @@ final class AnalysisRequestRepository
                 $fingerprint,
                 $now,
                 $expiresAt,
-                $abandonedBefore,
             );
 
             if ($claim !== null) {
@@ -86,7 +92,6 @@ final class AnalysisRequestRepository
         string $fingerprint,
         DateTimeImmutable $now,
         DateTimeImmutable $expiresAt,
-        DateTimeImmutable $abandonedBefore,
     ): ?AnalysisClaim {
         $connection = ($this->connection)();
 
@@ -97,13 +102,13 @@ final class AnalysisRequestRepository
                         (installation_id, idempotency_key, request_fingerprint,
                          started_at, expires_at)
                      VALUES (:installation_id, :idempotency_key, :fingerprint,
-                             :now, :expires_at)',
+                             :started_at, :expires_at)',
                 )
                 ->execute([
                     'installation_id' => $installationId,
                     'idempotency_key' => $idempotencyKey,
                     'fingerprint' => $fingerprint,
-                    'now' => self::formatTimestamp($now),
+                    'started_at' => self::formatTimestamp($now),
                     'expires_at' => self::formatTimestamp($expiresAt),
                 ]);
 
@@ -135,32 +140,16 @@ final class AnalysisRequestRepository
             return AnalysisClaim::KeyReuse;
         }
 
-        if ($existing['completed_at'] !== null) {
-            return AnalysisClaim::Completed;
-        }
-
-        $takeover = $connection->prepare(
-            'UPDATE analysis_requests
-             SET started_at = :now
-             WHERE installation_id = :installation_id
-               AND idempotency_key = :idempotency_key
-               AND completed_at IS NULL
-               AND started_at <= :abandoned_before',
-        );
-        $takeover->execute([
-            'installation_id' => $installationId,
-            'idempotency_key' => $idempotencyKey,
-            'now' => self::formatTimestamp($now),
-            'abandoned_before' => self::formatTimestamp($abandonedBefore),
-        ]);
-
-        return $takeover->rowCount() > 0
-            ? AnalysisClaim::Granted
+        return $existing['completed_at'] !== null
+            ? AnalysisClaim::Completed
             : AnalysisClaim::InProgress;
     }
 
     /**
      * 解析の完了を記録し、responseを引き渡しバッファへ入れる。
+     *
+     * 保持期間の起点を解析完了時へ揃えるため、`expires_at`もここで引き直す。
+     * 解析に時間がかかっても、結果本文の保持期間は完了時からの一定時間になる。
      *
      * `$responseBody`は返却するJSONそのものである。再送に対して同じbyte列を
      * 返すため、整形し直さずに保存する。
@@ -170,6 +159,7 @@ final class AnalysisRequestRepository
         string $idempotencyKey,
         string $responseBody,
         DateTimeImmutable $now,
+        DateTimeImmutable $expiresAt,
     ): void {
         $connection = ($this->connection)();
         $connection->beginTransaction();
@@ -190,14 +180,15 @@ final class AnalysisRequestRepository
             $connection
                 ->prepare(
                     'UPDATE analysis_requests
-                     SET completed_at = :now
+                     SET completed_at = :completed_at, expires_at = :expires_at
                      WHERE installation_id = :installation_id
                        AND idempotency_key = :idempotency_key',
                 )
                 ->execute([
                     'installation_id' => $installationId,
                     'idempotency_key' => $idempotencyKey,
-                    'now' => self::formatTimestamp($now),
+                    'completed_at' => self::formatTimestamp($now),
+                    'expires_at' => self::formatTimestamp($expiresAt),
                 ]);
             $connection->commit();
         } catch (PDOException $exception) {
@@ -211,24 +202,26 @@ final class AnalysisRequestRepository
      * 解析が完了しなかったrequestのAI呼び出し権を解放し、同じIdempotency-Keyでの
      * 再送をそのまま再実行できるようにする。
      *
-     * #2の時点ではAI providerを呼ばないため、解放しても課金は発生しない。
-     * Issue #4でAI呼び出し後に失敗する経路が生まれた場合は、課金済みかどうかで
-     * 解放してよいかが変わるため、そこで判断する。
+     * 自分が取得した行だけを対象にするため、取得時刻も条件に含める。前の処理が
+     * 遅れて失敗したときに、別のrequestの取得を消さないためである。
      */
     public function release(
         string $installationId,
         string $idempotencyKey,
+        DateTimeImmutable $claimedAt,
     ): void {
         ($this->connection)()
             ->prepare(
                 'DELETE FROM analysis_requests
                  WHERE installation_id = :installation_id
                    AND idempotency_key = :idempotency_key
+                   AND started_at = :started_at
                    AND completed_at IS NULL',
             )
             ->execute([
                 'installation_id' => $installationId,
                 'idempotency_key' => $idempotencyKey,
+                'started_at' => self::formatTimestamp($claimedAt),
             ]);
     }
 

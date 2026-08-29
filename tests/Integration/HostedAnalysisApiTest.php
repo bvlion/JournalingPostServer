@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use JournalingPostServer\Analysis\Analysis;
 use JournalingPostServer\Analysis\AnalysisRequest;
 use JournalingPostServer\Analysis\AnalysisRequestParser;
+use JournalingPostServer\Analysis\AnalysisRequestRepository;
 use JournalingPostServer\Http\ApiException;
 use JournalingPostServer\Http\CreateAnalysisAction;
 use JournalingPostServer\Tests\Integration\Support\DatabaseTestCase;
@@ -28,6 +29,8 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     /** 端末側で生成するIdempotency-Keyの例（架空のUUID v4）。 */
     private const KEY = '2f5b6a1c-7d84-4e0f-9a31-6c0d5e8b41a7';
 
+    private const OTHER_KEY = '9c1e0f47-3ab6-4d52-8e10-7f2b5a6c93d8';
+
     private const NOTE = 'DBへ保存されてはいけない架空のメモ';
 
     private PDO $connection;
@@ -43,12 +46,13 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         $this->analyzer = new FakeAnalyzer();
     }
 
-    public function testRegistrationIssuesCredentialAndStoresOnlyItsHash(): void
+    public function testRegistrationIssuesAnApiKeyAndStoresOnlyItsHash(): void
     {
         $response = $this->send('POST', '/v1/installations');
         $installation = self::payload($response)['installation'];
 
         self::assertSame(201, $response->getStatusCode());
+        self::assertSame(['apiKey'], array_keys($installation));
         self::assertStringStartsWith('jpk_', $installation['apiKey']);
 
         $stored = $this->connection
@@ -56,25 +60,30 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             ->fetchAll();
 
         self::assertCount(1, $stored);
-        self::assertSame($installation['id'], $stored[0]['id']);
+        self::assertSame(
+            ['id', 'api_key_hash', 'created_at'],
+            array_keys($stored[0]),
+        );
         self::assertSame(
             hash('sha256', $installation['apiKey']),
             $stored[0]['api_key_hash'],
         );
-        self::assertSame(
-            ['id', 'api_key_hash', 'created_at', 'last_used_at'],
-            array_keys($stored[0]),
+        // Server内部の識別子は応答へ出さない。
+        self::assertStringNotContainsString(
+            $stored[0]['id'],
+            (string) $response->getBody(),
         );
     }
 
     public function testAnalysisRequiresAValidInstallationApiKey(): void
     {
-        $installation = $this->register();
+        $this->register();
         $rejectedKeys = [
             null,
             'jpk_00000000000000000000000000000000000000000',
-            $installation['id'],
+            '3f1c9c4e-2a55-4c1b-9c2a-0b8f6b7d5e41',
             'fcm-token-like-value',
+            $this->installationId(),
         ];
 
         foreach ($rejectedKeys as $rejectedKey) {
@@ -92,7 +101,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
     public function testSuccessfulAnalysisReturnsAStorableAnalysisResult(): void
     {
-        $response = $this->analyse($this->register()['apiKey']);
+        $response = $this->analyse($this->register());
         $analysis = self::payload($response)['analysis'];
 
         self::assertSame(200, $response->getStatusCode());
@@ -120,7 +129,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
      */
     public function testRetryWithTheSameKeyReturnsTheSameResultWithoutReanalysing(): void
     {
-        $apiKey = $this->register()['apiKey'];
+        $apiKey = $this->register();
         $first = $this->analyse($apiKey);
         $second = $this->analyse($apiKey);
 
@@ -131,7 +140,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
     public function testSameKeyWithADifferentRequestIsRejected(): void
     {
-        $apiKey = $this->register()['apiKey'];
+        $apiKey = $this->register();
         $this->analyse($apiKey);
 
         $response = $this->analyse(
@@ -152,12 +161,9 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
      */
     public function testDeliberateReanalysisUsesADifferentKey(): void
     {
-        $apiKey = $this->register()['apiKey'];
+        $apiKey = $this->register();
         $this->analyse($apiKey);
-        $response = $this->analyse(
-            $apiKey,
-            key: '9c1e0f47-3ab6-4d52-8e10-7f2b5a6c93d8',
-        );
+        $response = $this->analyse($apiKey, key: self::OTHER_KEY);
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame(2, $this->analyzer->callCount);
@@ -165,10 +171,10 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
     public function testConcurrentRequestWithTheSameKeyIsAskedToRetry(): void
     {
-        $installation = $this->register();
-        $this->beginConcurrentAnalysis($installation['id'], 'now');
+        $apiKey = $this->register();
+        $this->beginUnfinishedAnalysis('now');
 
-        $response = $this->analyse($installation['apiKey']);
+        $response = $this->analyse($apiKey);
 
         self::assertSame(409, $response->getStatusCode());
         self::assertSame(
@@ -180,20 +186,37 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * 処理が中断して完了記録が残らなかった場合、同じkeyの再送が引き継げる。
+     * 経過時間だけを根拠に新しいAI呼び出し権を与えない。前の処理が動き続けて
+     * いる可能性がある間にAIを二重に呼ばないための契約である。
      */
-    public function testAbandonedAnalysisIsTakenOverByARetry(): void
+    public function testUnfinishedAnalysisIsNotTakenOverBeforeItExpires(): void
     {
-        $installation = $this->register();
-        $this->beginConcurrentAnalysis(
-            $installation['id'],
-            sprintf(
-                '-%d seconds',
-                CreateAnalysisAction::PROCESSING_TIMEOUT_SECONDS + 60,
-            ),
+        $apiKey = $this->register();
+        $this->beginUnfinishedAnalysis(
+            sprintf('-%d seconds', CreateAnalysisAction::RETENTION_SECONDS - 60),
         );
 
-        $response = $this->analyse($installation['apiKey']);
+        $response = $this->analyse($apiKey);
+
+        self::assertSame(409, $response->getStatusCode());
+        self::assertSame(
+            'analysis_in_progress',
+            self::payload($response)['error']['code'],
+        );
+        self::assertSame(0, $this->analyzer->callCount);
+    }
+
+    /**
+     * 完了しなかったrequestも保持期間で失効し、その後は新しい解析として扱う。
+     */
+    public function testExpiredUnfinishedAnalysisBecomesANewRequest(): void
+    {
+        $apiKey = $this->register();
+        $this->beginUnfinishedAnalysis(
+            sprintf('-%d seconds', CreateAnalysisAction::RETENTION_SECONDS + 60),
+        );
+
+        $response = $this->analyse($apiKey);
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame(1, $this->analyzer->callCount);
@@ -204,7 +227,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
      */
     public function testFailedAnalysisReleasesTheKeyForARetry(): void
     {
-        $apiKey = $this->register()['apiKey'];
+        $apiKey = $this->register();
         $this->analyzer->behaveAs(
             static fn (AnalysisRequest $request): Analysis => throw
                 new ApiException(
@@ -239,12 +262,37 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
+     * 別のrequestが取得したAI呼び出し権を、遅れて失敗した処理が解放しない。
+     */
+    public function testReleaseOnlyAffectsTheClaimItTook(): void
+    {
+        $this->register();
+        $this->beginUnfinishedAnalysis('now');
+        $repository = new AnalysisRequestRepository(
+            fn (): PDO => $this->connection,
+        );
+
+        $repository->release(
+            $this->installationId(),
+            self::KEY,
+            new DateTimeImmutable('2020-01-01T00:00:00Z'),
+        );
+
+        self::assertSame(
+            1,
+            (int) $this->connection
+                ->query('SELECT COUNT(*) FROM analysis_requests')
+                ->fetchColumn(),
+        );
+    }
+
+    /**
      * AI providerを差し替えるまでは、解析直前で503を返す（既定のAnalyzer）。
      */
     public function testAnalysisProviderIsNotConfiguredYet(): void
     {
         $response = $this->analyse(
-            $this->register()['apiKey'],
+            $this->register(),
             useDefaultAnalyzer: true,
         );
 
@@ -258,7 +306,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
     public function testInvalidRequestsAreRejectedBeforeAnalysis(): void
     {
-        $apiKey = $this->register()['apiKey'];
+        $apiKey = $this->register();
         $expectations = [
             ['key' => 'short', 'code' => 'invalid_request', 'status' => 400],
             ['body' => '{', 'code' => 'invalid_request', 'status' => 400],
@@ -299,7 +347,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
      */
     public function testJournalEntryContentIsNeverPersisted(): void
     {
-        $this->analyse($this->register()['apiKey']);
+        $this->analyse($this->register());
 
         $requests = $this->connection
             ->query('SELECT * FROM analysis_requests')
@@ -334,32 +382,66 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * 保持期間を過ぎたidempotency metadataと解析結果は、次の解析requestが
-     * 削除する。Cronを増やさずに保持期間の上限を守る。
+     * 解析結果bufferの保持期間の起点は解析完了時である。解析に時間がかかっても
+     * 完了からの一定時間で失効する。
      */
-    public function testRetentionWindowRemovesMetadataAndBufferedResults(): void
+    public function testBufferedResultExpiresRelativeToCompletion(): void
     {
-        $apiKey = $this->register()['apiKey'];
-        $this->analyse($apiKey);
+        $this->analyse($this->register());
 
-        $this->connection->exec(
-            sprintf(
-                'UPDATE analysis_requests SET expires_at = expires_at'
-                    . ' - INTERVAL %d SECOND',
-                CreateAnalysisAction::RETENTION_SECONDS + 60,
-            ),
+        $request = $this->connection
+            ->query(
+                'SELECT started_at, completed_at, expires_at'
+                    . ' FROM analysis_requests',
+            )
+            ->fetch();
+
+        self::assertNotSame($request['started_at'], $request['completed_at']);
+        self::assertSame(
+            (new DateTimeImmutable($request['completed_at']))
+                ->modify(
+                    sprintf(
+                        '+%d seconds',
+                        CreateAnalysisAction::RETENTION_SECONDS,
+                    ),
+                )
+                ->format('Y-m-d H:i:s.u'),
+            $request['expires_at'],
         );
+    }
+
+    /**
+     * 後続の解析requestが来なくても、失効した解析結果本文がDBへ残り続けない。
+     * XServer Cronが`bin/prune-expired-analyses.php`から呼ぶ経路。
+     */
+    public function testExpiredResultsArePurgedWithoutAFurtherRequest(): void
+    {
+        $this->analyse($this->register());
+        $this->expireStoredAnalyses();
+
+        $purgedCount = (new AnalysisRequestRepository(
+            fn (): PDO => $this->connection,
+        ))->purgeExpired(new DateTimeImmutable('now'));
+
+        self::assertSame(1, $purgedCount);
+        self::assertSame(0, $this->countRows('analysis_requests'));
+        self::assertSame(0, $this->countRows('analysis_deliveries'));
+    }
+
+    /**
+     * 保持期間を過ぎたrequestは、次の解析requestの処理中にも削除される。
+     */
+    public function testExpiredResultsArePurgedByTheNextRequest(): void
+    {
+        $apiKey = $this->register();
+        $this->analyse($apiKey);
+        $this->expireStoredAnalyses();
 
         $response = $this->analyse($apiKey);
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame(2, $this->analyzer->callCount);
-        self::assertSame(
-            1,
-            (int) $this->connection
-                ->query('SELECT COUNT(*) FROM analysis_deliveries')
-                ->fetchColumn(),
-        );
+        self::assertSame(1, $this->countRows('analysis_deliveries'));
     }
 
     /**
@@ -367,7 +449,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
      */
     public function testCompletedRequestWithoutABufferedResultIsReported(): void
     {
-        $apiKey = $this->register()['apiKey'];
+        $apiKey = $this->register();
         $this->analyse($apiKey);
         $this->connection->exec('DELETE FROM analysis_deliveries');
 
@@ -382,14 +464,11 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * 処理中の解析requestを、Serverの外から作れない形で再現する。
+     * 完了していない解析requestを、Serverの外から作れない形で再現する。
      */
-    private function beginConcurrentAnalysis(
-        string $installationId,
-        string $startedAtModifier,
-    ): void {
-        $now = new DateTimeImmutable('now');
-        $startedAt = $now->modify($startedAtModifier);
+    private function beginUnfinishedAnalysis(string $startedAtModifier): void
+    {
+        $startedAt = (new DateTimeImmutable('now'))->modify($startedAtModifier);
 
         $this->connection
             ->prepare(
@@ -400,7 +479,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
                          :started_at, :expires_at)',
             )
             ->execute([
-                'installation_id' => $installationId,
+                'installation_id' => $this->installationId(),
                 'idempotency_key' => self::KEY,
                 'fingerprint' => AnalysisRequestParser::parse(
                     self::requestPayload(),
@@ -417,14 +496,40 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             ]);
     }
 
+    private function expireStoredAnalyses(): void
+    {
+        $this->connection->exec(
+            sprintf(
+                'UPDATE analysis_requests SET expires_at = expires_at'
+                    . ' - INTERVAL %d SECOND',
+                CreateAnalysisAction::RETENTION_SECONDS + 60,
+            ),
+        );
+    }
+
+    private function countRows(string $table): int
+    {
+        return (int) $this->connection
+            ->query(sprintf('SELECT COUNT(*) FROM %s', $table))
+            ->fetchColumn();
+    }
+
     /**
-     * @return array{id: string, apiKey: string}
+     * Server内部のinstallation識別子。APIからは取得できないため、テストは
+     * 直接DBから読む。
      */
-    private function register(): array
+    private function installationId(): string
+    {
+        return (string) $this->connection
+            ->query('SELECT id FROM installations')
+            ->fetchColumn();
+    }
+
+    private function register(): string
     {
         return self::payload(
             $this->send('POST', '/v1/installations'),
-        )['installation'];
+        )['installation']['apiKey'];
     }
 
     /**

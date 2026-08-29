@@ -186,6 +186,75 @@ final class AnalysisRequestParserTest extends TestCase
         }
     }
 
+    /**
+     * `DateTimeImmutable`は存在しない暦日を正規化してしまうため、桁数だけでは
+     * 契約違反を弾けない。RFC 3339として不正な値を受理しないことを確認する。
+     */
+    public function testInvalidTimestampsAreRejected(): void
+    {
+        $invalidTimestamps = [
+            '2026-02-30T00:00:00Z',
+            '2025-02-29T00:00:00Z',
+            '2026-13-01T00:00:00Z',
+            '2026-00-10T00:00:00Z',
+            '2026-08-00T00:00:00Z',
+            '2026-08-32T00:00:00Z',
+            '2026-08-29T24:00:00Z',
+            '2026-08-29T00:60:00Z',
+            '2026-08-29T00:00:60Z',
+            '2026-08-29T00:00:00+24:00',
+            '2026-08-29T00:00:00+09:60',
+            '2026-08-29 00:00:00Z',
+            '2026-08-29T00:00:00z',
+            '2026-08-29T00:00:00',
+            '2026-08-29',
+        ];
+
+        foreach ($invalidTimestamps as $invalidTimestamp) {
+            self::assertSame(
+                ['period.start: must be an RFC 3339 timestamp.'],
+                self::violations([
+                    'period' => [
+                        'start' => $invalidTimestamp,
+                        'end' => '2026-08-29T09:00:00Z',
+                    ],
+                    'entries' => [
+                        [
+                            'recordedAt' => '2026-08-29T00:30:00Z',
+                            'mood' => self::mood(),
+                        ],
+                    ],
+                ]),
+                sprintf('受理されました: %s', $invalidTimestamp),
+            );
+        }
+    }
+
+    public function testValidBoundaryTimestampsAreAccepted(): void
+    {
+        $request = AnalysisRequestParser::parse([
+            'period' => [
+                'start' => '2024-02-29T00:00:00Z',
+                'end' => '2024-03-01T23:59:59.999999+13:45',
+            ],
+            'entries' => [
+                [
+                    'recordedAt' => '2024-02-29T23:59:59.999-11:30',
+                    'mood' => self::mood(),
+                ],
+            ],
+        ]);
+
+        self::assertSame(
+            '2024-02-29T00:00:00Z',
+            $request->periodStart->format('Y-m-d\TH:i:s\Z'),
+        );
+        self::assertSame(
+            '2024-03-01T10:14:59Z',
+            $request->periodEnd->format('Y-m-d\TH:i:s\Z'),
+        );
+    }
+
     public function testMissingPeriodAndEntriesAreReported(): void
     {
         self::assertSame(

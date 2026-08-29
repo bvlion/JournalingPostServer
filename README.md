@@ -39,7 +39,7 @@ API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめて�
 
 | Endpoint | 内容 |
 | --- | --- |
-| `POST /v1/installations` | 匿名installationを登録し、Hosted API用のAPI keyを発行する |
+| `POST /v1/installations` | 匿名installationを登録し、Hosted API用のAPI keyを発行する（Androidが保持するのはこのAPI keyだけ） |
 | `POST /v1/analyses` | 対象期間のJournalEntryを受け取り、AI解析結果を同じ応答で返す |
 
 `POST /v1/analyses`は`Authorization: Bearer <API key>`と`Idempotency-Key`を必要とします。request / responseのschema、error契約、retry / idempotency、保持期間は[Hosted解析API契約](docs/hosted-analysis-api.md)を参照してください。
@@ -127,11 +127,27 @@ SQLの適用と`schema_migrations`への記録は別のステートメントで�
 | テーブル | 内容 | 追加したIssue |
 | --- | --- | --- |
 | `schema_migrations` | 適用済みマイグレーションの記録（`database/schema_migrations.sql`） | #7 |
-| `installations` | 匿名installation識別子とAPI keyのSHA-256 | #2 |
+| `installations` | Server内部のinstallation識別子とAPI keyのSHA-256 | #2 |
 | `analysis_requests` | 解析requestのidempotency metadata（本文を含まない） | #2 |
 | `analysis_deliveries` | 再送へ同じ結果を返すための解析結果の引き渡しバッファ | #2 |
 
-JournalEntry本文はDBへ保存しません。解析結果本文もServerの原本にはせず、引き渡しバッファへ保持期間（30分）の間だけ残します。詳細は[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照してください。
+JournalEntry本文はDBへ保存しません。解析結果本文もServerの原本にはせず、引き渡しバッファへ保持期間（解析完了から30分）の間だけ残します。詳細は[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照してください。
+
+### 失効データの削除
+
+失効した解析metadataと引き渡しバッファは、解析requestの処理中に削除します。ただしそれだけでは、requestが来なくなった期間に解析結果本文が保持期間を越えて残り続けます。定期実行で削除してください。
+
+```shell
+docker compose run --rm app composer prune
+```
+
+本番では、XServer Cronから5分間隔で実行します。
+
+```shell
+/opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
+```
+
+出力は削除件数だけで、本文やinstallation識別子をログへ残しません。
 
 Push予約用のテーブルはIssue #3で追加します。
 
@@ -194,7 +210,7 @@ make check-clean
 - `pdo_mysql` / `mbstring` / `json` / `openssl` / `curl`が利用可能
 - アプリ本体はドキュメントルート外へ配置し、`public_html`には`public/index.php`へのシンボリックリンクと`public/.htaccess`のコピーだけを置く
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
-- XServer CronはIssue #3で使用予定
+- XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Push予約での使用はIssue #3
 
 **本番デプロイは行っていません。** XServer上のファイル・DB・cron・秘密情報にも触れていません。
 

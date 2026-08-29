@@ -33,11 +33,19 @@ final class AnalysisRequestParser
     public const MAX_MOOD_EMOJI_LENGTH = 16;
 
     /**
-     * RFC 3339のうち、Androidの`Instant.toString()`が生成する表記を受け付ける。
-     * 秒未満は任意桁で、オフセットは`Z`または`+09:00`形式のみ許可する。
+     * RFC 3339のうち、Androidの`Instant.toString()`が生成する表記だけを
+     * 受け付ける。区切りの`T`と`Z`は大文字のみ、秒未満は任意桁、オフセットは
+     * `Z`または`+09:00`形式とする。
+     *
+     * 桁数だけでは`2026-02-30`のような存在しない日付を弾けないため、
+     * `validateTimestampParts()`で暦日・時刻・オフセットの範囲も検証する。
      */
-    private const TIMESTAMP_PATTERN =
-        '/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})\z/';
+    private const TIMESTAMP_PATTERN = '/\A'
+        . '(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})'
+        . 'T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})'
+        . '(?:\.\d{1,9})?'
+        . '(?:Z|(?<offsetSign>[+-])(?<offsetHour>\d{2}):(?<offsetMinute>\d{2}))'
+        . '\z/';
 
     /**
      * @param array<array-key, mixed> $payload
@@ -296,7 +304,10 @@ final class AnalysisRequestParser
         string $path,
         array &$violations,
     ): ?DateTimeImmutable {
-        if (!is_string($value) || preg_match(self::TIMESTAMP_PATTERN, $value) !== 1) {
+        $matched = is_string($value)
+            && preg_match(self::TIMESTAMP_PATTERN, $value, $parts) === 1;
+
+        if (!$matched || !self::validateTimestampParts($parts)) {
             $violations[] = sprintf(
                 '%s: must be an RFC 3339 timestamp.',
                 $path,
@@ -319,5 +330,45 @@ final class AnalysisRequestParser
         // 以降は絶対時刻としてのみ扱うため、UTCへ正規化する。Serverは
         // 端末のtimezoneを解釈しない。
         return $moment->setTimezone(new DateTimeZone('UTC'));
+    }
+
+    /**
+     * 暦日・時刻・オフセットの範囲を検証する。
+     *
+     * `DateTimeImmutable`は`2026-02-30`を3月2日へ繰り上げるなど、存在しない
+     * 日付を例外なしで正規化する。契約どおり422で拒否するため、生成前に確認する。
+     *
+     * うるう秒（`:60`）は受け付けない。Androidの`Instant.toString()`が生成せず、
+     * 受け付けても解析の入力として意味を持たないためである。
+     *
+     * @param array<string, string> $parts
+     */
+    private static function validateTimestampParts(array $parts): bool
+    {
+        if (
+            !checkdate(
+                (int) $parts['month'],
+                (int) $parts['day'],
+                (int) $parts['year'],
+            )
+        ) {
+            return false;
+        }
+
+        if (
+            (int) $parts['hour'] > 23
+            || (int) $parts['minute'] > 59
+            || (int) $parts['second'] > 59
+        ) {
+            return false;
+        }
+
+        // オフセットが無い（`Z`）場合、名前付きグループは設定されない。
+        if (($parts['offsetHour'] ?? '') === '') {
+            return true;
+        }
+
+        return (int) $parts['offsetHour'] <= 23
+            && (int) $parts['offsetMinute'] <= 59;
     }
 }

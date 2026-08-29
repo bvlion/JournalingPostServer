@@ -22,9 +22,15 @@
 
 ## データの取り扱い
 
-- JournalEntry本文、prompt、AnalysisResult本文をデータベースへ保存しません。
+- JournalEntry本文とpromptをデータベースへ保存しません。例外はありません。
+- AnalysisResult本文をデータベースへ恒久保存しません。サーバーはどの場合も原本になりません。
+- AnalysisResult本文の唯一の例外は、network応答の消失による重複AI課金を防ぐためのretry delivery bufferです。次をすべて満たす場合にだけ許可します。
+  - 期限を持ち、期限切れの本文を返しません。
+  - trafficの有無にかかわらず、期限切れの本文がデータベースへ残り続けない削除の仕組みを備えます。
+  - 本文をidempotency / usageのmetadataと同じ行へ混ぜず、テーブルを分離します。
+  - 保持期間の上限をドキュメントへ明記します。
 - 上記の本文を通常ログ・例外メッセージ・テスト出力へ出しません。
-- サーバーが保持してよいのは、匿名installation識別子、FCM token、Hosted API用の最小認証情報、Push予約の`triggerAt`、重複防止用の短期metadataまでです。
+- サーバーが保持してよいのは、匿名installation識別子、FCM token、Hosted API用の最小認証情報、Push予約の`triggerAt`、重複防止用の短期metadata、および上記のretry delivery bufferまでです。
 - 名前・メールアドレス・profile・timezone・解析スケジュールのルール・entitlement・広告状態を保持しません。
 - 将来必要になりそうなテーブルを先回りして作成しません。テーブルは必要になったIssueで追加します。
 

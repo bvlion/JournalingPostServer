@@ -32,11 +32,22 @@ Push予約（FCM）はIssue #3、AI provider実装はIssue #4、rate limit / usa
 | Base path | `/v1` |
 | request body | `Content-Type: application/json`（UTF-8） |
 | response body | `application/json; charset=utf-8` |
-| 時刻表現 | RFC 3339。requestはoffset付き（`Z`または`+09:00`）を受け付け、Serverは受信時にUTCへ正規化する |
+| 時刻表現 | RFC 3339。詳細は下記 |
 | responseの時刻 | UTC・秒精度（`2026-08-29T09:00:05Z`） |
 | 未知のフィールド | Serverは無視する。Android側の項目追加でServerの更新を必要としない |
 
-Serverはtimezoneやrecurrenceを解釈しません。対象期間と次回解析時刻の計算はAndroid側の責務です。
+Serverはtimezoneやrecurrenceを解釈しません。対象期間の計算はAndroid側の責務です。
+
+### timestampの表記
+
+requestのtimestampは`YYYY-MM-DDThh:mm:ss[.fff…]<offset>`だけを受け付けます。
+
+- 区切りの`T`と、UTCを表す`Z`は大文字のみです。空白区切りは受け付けません。
+- offsetは`Z`または`+09:00` / `-11:30`形式です。offsetの省略は受け付けません。
+- 秒未満は1〜9桁の任意です。Serverはmicrosecond精度まで扱います。
+- 存在しない暦日（`2026-02-30`、うるう年でない年の`02-29`）、範囲外の時刻（`24:00`、`:60`）、範囲外のoffset（`+24:00`、`+09:60`）は`validation_error`で拒否します。うるう秒（`:60`）は受け付けません。
+
+Serverは受信時にUTCへ正規化します。responseのtimestampはUTC・秒精度です（`2026-08-29T09:00:05Z`）。
 
 ### 互換性の扱い
 
@@ -50,7 +61,7 @@ Serverはtimezoneやrecurrenceを解釈しません。対象期間と次回解�
 - Serverが発行した高エントロピーのAPI key（`jpk_`＋256bitのbase64url、計47文字）を`Authorization: Bearer <API key>`で送ります。
 - ServerはAPI keyのSHA-256だけを保存します。平文は登録応答でしか返しません。
 - FCM tokenや端末が生成したUUIDを、それだけで認証情報として受け付けません。クライアントが値を選べる方式では「このinstallationがHosted APIを利用してよい」ことを確認できないためです。
-- installation識別子もServerが発行します。クライアントが選んだ識別子を認証情報に紐づけると、他のinstallationの識別子を先取りできてしまうためです。Androidは発行された`id`と`apiKey`を保存します。
+- Androidが保持するのはAPI keyだけです。Serverは内部でinstallation識別子を持ちますが、APIへは出しません。Androidから識別子を送る用途が無く、返せば端末側に不要な状態が増えるためです。
 
 XServer（Apache）では`Authorization`ヘッダーが既定でPHPへ届きません。`public/.htaccess`のRewriteで転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応しています。
 
@@ -76,13 +87,12 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 ```json
 {
   "installation": {
-    "id": "3f1c9c4e-2a55-4c1b-9c2a-0b8f6b7d5e41",
     "apiKey": "jpk_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
   }
 }
 ```
 
-`apiKey`が返るのはこの応答だけです。
+`apiKey`が返るのはこの応答だけです。Androidはこの値だけを保存します。
 
 ## POST /v1/analyses
 
@@ -180,23 +190,27 @@ Android側`AnalysisResult`が必要とする「対象期間」「解析日時」
 | 状態 | 応答 |
 | --- | --- |
 | 未処理 | AI解析を実行し`200` |
-| 処理中 | `409 analysis_in_progress` + `Retry-After: 15` |
+| 処理中（完了していない） | `409 analysis_in_progress` + `Retry-After: 15` |
 | 完了済み・保持期間内 | 初回と同じbodyを`200`で返す（AIは呼ばない） |
 | 同じkeyで別内容 | `409 idempotency_key_reuse` |
 | 保持期間切れ | 新しいrequestとして扱い、AI解析を実行して`200` |
 
-完了済みの結果を返せるようにするため、Serverは解析結果本文を**引き渡しバッファ**（`analysis_deliveries`）へ保持期間（30分）の間だけ保持します。これはidempotency metadata（`analysis_requests`）とは別のテーブルで、原本ではありません。この保持がないと、responseがnetworkで失われた場合に、課金済みの解析結果を返せず再課金になります。
+完了済みの結果を返せるようにするため、Serverは解析結果本文を**引き渡しバッファ**（`analysis_deliveries`）へ保持期間の間だけ保持します。これはidempotency metadata（`analysis_requests`）とは別のテーブルで、原本ではありません。この保持がないと、responseがnetworkで失われた場合に、課金済みの解析結果を返せず再課金になります。
 
-引き渡し済みの行を即時削除せず保持期間まで残すのは、削除するとその応答が失われた場合に同じ問題が再発するためです。保持期間の上限は削除方式によらず30分で変わりません。
+引き渡し済みの行を即時削除せず保持期間まで残すのは、削除するとその応答が失われた場合に同じ問題が再発するためです。保持期間の上限は削除方式によらず変わりません。
 
-### 中断した解析の引き継ぎ
+### 応答が返らなかった解析の扱い
 
-処理中のままServerが停止すると、その`Idempotency-Key`が占有され続けます。開始から120秒（`PROCESSING_TIMEOUT_SECONDS`）を過ぎても完了しない解析は中断とみなし、同じkeyでの再送が処理を引き継ぎます。
+処理中のままServerが停止しても、経過時間だけを根拠に新しいAI呼び出し権を与えません。前の処理が動き続けている保証が無く、与えると同じ解析を二重にAIへ投げるためです。
+
+その`Idempotency-Key`は保持期間（30分）で失効するまで`409 analysis_in_progress`を返し続け、失効後は新しい解析として受け付けます。
+
+AI provider側のtimeoutを前提にした早期の復帰は、実providerのtimeout特性を確認できるIssue #4で判断します。#2では先回りしてfencingやprovider timeoutを実装しません。
 
 ### timeout
 
-- 同期処理1回の想定上限は120秒です。Androidの読み取りtimeoutはこれ以上（目安150秒）にしてください。
-- timeoutしたrequestは、同じ`Idempotency-Key`で再送してください。
+- Androidの読み取りtimeoutは120秒を目安にしてください。実際の上限はIssue #4でAI providerの応答時間を実測して決めます。
+- timeoutしたrequestは、`Retry-After`に従って同じ`Idempotency-Key`で再送してください。
 - 保持期間（30分）を過ぎてからの再送は新しい解析になります。それより後にretryしないでください。
 
 ## Error response
@@ -240,19 +254,29 @@ Android側`AnalysisResult`が必要とする「対象期間」「解析日時」
 
 ## Serverが保持するデータと保持期間
 
-| テーブル | 内容 | 保持期間 |
+| テーブル | 内容 | 失効 |
 | --- | --- | --- |
-| `installations` | installation識別子、API keyのSHA-256、作成日時、最終利用日時 | installationが使われている間 |
-| `analysis_requests` | installation識別子、`Idempotency-Key`、requestのSHA-256、開始・完了・失効日時 | 30分 |
-| `analysis_deliveries` | 解析結果のresponse body | 30分（`analysis_requests`の行と一緒に削除） |
+| `installations` | Server内部のinstallation識別子、API keyのSHA-256、作成日時 | 失効しない（installationが使われている間） |
+| `analysis_requests` | installation識別子、`Idempotency-Key`、requestのSHA-256、開始・完了・失効日時 | 解析完了から30分。完了しなかった場合は開始から30分 |
+| `analysis_deliveries` | 解析結果のresponse body | `analysis_requests`の行と一緒に失効・削除 |
 
 - JournalEntry本文をDBへ保存しません。request処理中のメモリ上にだけ存在します。
 - AnalysisResult本文の原本はServerに置きません。再送へ同じ結果を返すためだけに、引き渡しバッファへ保持期間の間だけ残します。
 - `analysis_requests`に入るのは正規化requestのSHA-256だけで、本文は復元できません。
 - 本文・prompt・API keyを通常ログ、例外メッセージ、error responseへ出しません。
 - 名前、メールアドレス、profile、timezone、解析スケジュールのルール、entitlement、広告状態は保持しません。
-- 保持期間の削除は解析requestの度に行います（`AnalysisRequestRepository::purgeExpired()`）。この目的のためだけのCronは増やしません。
 - `installations`の削除は`analysis_requests`と`analysis_deliveries`へ`ON DELETE CASCADE`で波及します。使われなくなったinstallationの削除方針は、実運用の状況を見てIssue #5で決めます。
+
+### 保持期間の保証
+
+失効した行は次の2経路で削除します。
+
+1. 解析requestの処理中（`AnalysisRequestRepository::purgeExpired()`）。失効した結果を返さないよう、idempotencyの判定前に行います。
+2. XServer Cronからの`bin/prune-expired-analyses.php`（5分間隔）。
+
+2が必要なのは、解析requestが来なくなった期間に1が動かないためです。1だけではtrafficが途絶えた時点の解析結果本文が保持期間を越えて残り続けます。
+
+したがって、解析結果本文がDB上に存在しうる最大時間は「保持期間30分＋cron間隔5分」の35分です。失効後の結果をAPIが返すことはありません（1が判定前に削除するため）。
 
 ## API境界
 
