@@ -137,7 +137,7 @@ docker compose run --rm app composer test                # unit + integration（
 make check
 ```
 
-- `make check`は`compose.check.yaml`を検証専用のCompose project（`journalingpostserver-check`）で実行します。開発用`compose.yaml`のcontainer・network・volume・host port（8081番）とは別のprojectであり、開発用の`database` / `vendor` volumeを共有しません。
+- `make check`は`compose.check.yaml`を検証専用のCompose project（`journalingpostserver-check`）で実行します。開発用`compose.yaml`のcontainer・network・volume・host port（8081番）とは別のprojectであり、開発用の`database` / `vendor` volumeを共有しません。開発用のproject名はComposeがチェックアウト先のディレクトリ名から導出するため、この固定名と衝突することはありません。
 - 検証用appコンテナは実`.env`を読み込みません。`.env.example`の架空値だけを`/app/.env`へread-onlyで重ね、Composeの変数展開にも`--env-file .env.example`を使用します。
 - 成功・失敗にかかわらず、終了時に検証専用projectのcontainer・network・volumeだけをcleanupします。開発中の環境には影響しません。
 - GitHub Actions（`.github/workflows/ci.yaml`）も同じ`make check`を使用し、加えて`git diff --check`を実行します。

@@ -45,7 +45,9 @@
 
 ## Docker運用の安全ルール
 
-- このリポジトリの開発用Compose project名は`journalingpostserver`、検証用は`journalingpostserver-check`です。
+- 開発用（`compose.yaml`）のCompose project名は固定しません。Composeがチェックアウト先のディレクトリ名から導出した名前をそのまま使います。別のcloneやgit worktreeが自然に別projectへ分離され、既存の開発環境を共有・再作成しないためです。`compose.yaml`へ`name:`を追加しません。
+- 検証用（`make check`）だけはproject名を`journalingpostserver-check`へ固定します。Makefileが`-p`で明示するため、開発用projectと混ざりません。
+- 作業対象のcontainer・network・volumeがどのprojectのものか分からない場合は、`docker compose ls`で確認してから操作します。
 - 同じDocker Desktop上で他プロジェクトのcontainer・network・volumeが動作しています。他プロジェクトのリソースへ触れません。
 - 起動中の開発用Docker環境（container・network・volume）を、利用者の明示的な許可なしに再作成・削除しません。
 - 開発用の`database` volumeを、利用者の明示的な許可なしに削除しません（`docker compose down --volumes`を無断で実行しません）。

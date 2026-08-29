@@ -1,6 +1,7 @@
-# 検証用（make check）専用のCompose project名。開発用（compose.yaml の
-# 既定project名 journalingpostserver）とは常に別の名前を使うことで、
-# container・network・volume・host portが開発環境と混ざらないようにする。
+# 検証用（make check）専用のCompose project名。開発用（compose.yaml）の
+# project名はComposeがディレクトリ名から導出するため固定しないが、検証用は
+# ここで明示的に固定し、-p で分離する。開発用と同じ名前になることはないため、
+# container・network・volume・host portが開発環境と混ざらない。
 CHECK_PROJECT = journalingpostserver-check
 
 # 検証専用のCompose構成（compose.check.yaml）を、検証専用のproject名・
