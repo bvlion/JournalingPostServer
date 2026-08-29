@@ -4,7 +4,7 @@
 
 JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXServerのレンタルサーバーへ配置する前提で構成しています。実行環境の調査結果は`BvlionBatch5`の`docs/production-environment.md`と共通です。
 
-Server基盤を用意したIssue（#7）の時点では、本番環境への配置・設定・接続は一切行っていません。以下は「この構成が将来そのまま載せられる」ことを示すための前提の記録です。
+本番環境への配置・設定・接続は一切行っていません。以下は「この構成が将来そのまま載せられる」ことを示すための前提の記録です。
 
 ここに記載するのは実行環境そのものの制約だけです。`BvlionBatch5`固有の運用判断（同プロジェクトが`/health`を作らないことなど）は、JournalingPostServerの制約として持ち込みません。
 
@@ -49,7 +49,8 @@ Server基盤を用意したIssue（#7）の時点では、本番環境への配�
 ## Apache
 
 - `.htaccess`とRewriteを利用できる。
-- `Authorization`ヘッダーは追加設定なしではPHPへ到達しない。`public/.htaccess`のRewriteで`HTTP_AUTHORIZATION`へ転送する。Issue #2で決める匿名installation認証の前提となる。
+- `Authorization`ヘッダーは追加設定なしではPHPへ到達しない。`public/.htaccess`のRewriteで`HTTP_AUTHORIZATION`へ転送する。これはHosted APIの匿名installation認証（`Authorization: Bearer <API key>`）の前提である。
+- 転送値は`index.php`への内部リダイレクトを経て`REDIRECT_HTTP_AUTHORIZATION`として届くことがある。`public/index.php`が両方を受け取れるようにしている。本番配置後は、`POST /v1/analyses`が`401 unauthorized`にならないことで転送が効いているか確認できる。
 
 ## Cron
 
@@ -58,9 +59,10 @@ Server基盤を用意したIssue（#7）の時点では、本番環境への配�
 ## 運用上の制約
 
 - 秘密情報をIssue、リポジトリ、デプロイログへ出力しない。
-- JournalEntry本文・prompt・AnalysisResult本文をDBおよび通常ログへ残さない。
+- JournalEntry本文・prompt・AnalysisResult本文をDBおよび通常ログへ残さない。解析結果は再送へ同じ結果を返すための引き渡しバッファにだけ、保持期間の間だけ残す（[Hosted解析API契約](hosted-analysis-api.md)を参照）。
+- installationのAPI keyはSHA-256だけを保存し、平文を保存・出力しない。
 
-## このIssueで行っていないこと
+## 行っていないこと
 
 - 本番環境へのデプロイ、およびデプロイ自動化（`deploy.yaml`相当）
 - XServer上のファイル・DB・cron・秘密情報の変更
