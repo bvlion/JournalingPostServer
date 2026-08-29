@@ -29,6 +29,10 @@ services:
 
   database:
     image: mysql:5.7
+    # 公式の mysql:5.7 は linux/amd64 のイメージしか提供していない。Apple Silicon
+    # (linux/arm64) でもエミュレーションで起動できるよう、本番と同じMySQL 5.7を
+    # 維持したままplatformを明示する。
+    platform: linux/amd64
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
