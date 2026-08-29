@@ -1,9 +1,9 @@
 # 検証専用（make check / GitHub Actions）のCompose構成。
 #
-# 開発用の compose.yaml とは常に別のCompose project名で実行する
-# （Makefileの CHECK_PROJECT を参照）。開発用のproject名はComposeが
-# ディレクトリ名から導出するため、この固定名と衝突することはない。
-# 次の点で開発環境から分離している。
+# 開発用の compose.yaml とは常に別のCompose project名で実行する。
+# 検証用のproject名はMakefileが開発用project名へ -check を付けて導出するため
+# （Makefileの DEV_PROJECT / CHECK_PROJECT を参照）、ディレクトリ名が何であっても
+# 開発用と同じprojectにはならない。次の点で開発環境から分離している。
 #
 # - host へ port を公開しない
 # - 開発用の database / vendor volume を共有せず、検証専用の使い捨て
