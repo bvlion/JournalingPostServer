@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace JournalingPostServer\Tests\Integration\Support;
 
-use DateTimeZone;
 use JournalingPostServer\Database\ConnectionFactory;
 use PDO;
 use PHPUnit\Framework\TestCase;
@@ -27,7 +26,6 @@ abstract class DatabaseTestCase extends TestCase
             $databaseConfiguration['name'],
             $databaseConfiguration['user'],
             $databaseConfiguration['password'],
-            new DateTimeZone($configuration['app']['timezone']),
         ))->create();
     }
 

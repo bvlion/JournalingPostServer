@@ -8,9 +8,7 @@ use Psr\Http\Server\RequestHandlerInterface;
 use Slim\Factory\AppFactory;
 
 require_once __DIR__ . '/../vendor/autoload.php';
-$configuration = require __DIR__ . '/config.php';
-
-date_default_timezone_set($configuration['app']['timezone']);
+require __DIR__ . '/config.php';
 
 $app = AppFactory::create();
 $app->addRoutingMiddleware();

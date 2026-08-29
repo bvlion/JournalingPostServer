@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace JournalingPostServer\Tests\Unit;
 
-use DateTimeZone;
 use JournalingPostServer\Database\ConnectionFactory;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -20,10 +19,7 @@ final class ConnectionFactoryTest extends TestCase
             'example_database_user',
             'example_database_password',
         ];
-        $connectionFactory = new ConnectionFactory(
-            ...$configurationValues,
-            timeZone: new DateTimeZone('UTC'),
-        );
+        $connectionFactory = new ConnectionFactory(...$configurationValues);
 
         try {
             $connectionFactory->create();

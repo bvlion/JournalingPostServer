@@ -4,7 +4,9 @@
 
 JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXServerのレンタルサーバーへ配置する前提で構成しています。実行環境の調査結果は`BvlionBatch5`の`docs/production-environment.md`と共通です。
 
-本Issue（#1）では本番環境への配置・設定・接続は一切行っていません。以下は「この構成が将来そのまま載せられる」ことを示すための前提の記録です。
+Server基盤を用意したIssue（#7）の時点では、本番環境への配置・設定・接続は一切行っていません。以下は「この構成が将来そのまま載せられる」ことを示すための前提の記録です。
+
+ここに記載するのは実行環境そのものの制約だけです。`BvlionBatch5`固有の運用判断（同プロジェクトが`/health`を作らないことなど）は、JournalingPostServerの制約として持ち込みません。
 
 ## PHP
 
@@ -28,7 +30,7 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 
 - 本番データベースはMySQL 5.7系である。
 - ローカル開発でも`mysql:5.7`を使用し、本番とバージョンを揃える。
-- MySQLのタイムゾーンテーブルが導入されている保証がないため、セッションタイムゾーンは名前ではなく`+00:00`形式のオフセットで設定する（`JournalingPostServer\Database\ConnectionFactory`）。
+- Serverは絶対時刻（Androidが計算した`triggerAt`）だけを扱うため、セッションタイムゾーンはUTC固定とする。MySQLのタイムゾーンテーブルが導入されている保証がないため、名前ではなく`+00:00`形式のオフセットで設定する（`JournalingPostServer\Database\ConnectionFactory`）。
 
 ## Composer
 
@@ -55,11 +57,10 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 
 ## 運用上の制約
 
-- `/health`エンドポイントは作成しない。
 - 秘密情報をIssue、リポジトリ、デプロイログへ出力しない。
 - JournalEntry本文・prompt・AnalysisResult本文をDBおよび通常ログへ残さない。
 
-## 本Issueで行っていないこと
+## このIssueで行っていないこと
 
 - 本番環境へのデプロイ、およびデプロイ自動化（`deploy.yaml`相当）
 - XServer上のファイル・DB・cron・秘密情報の変更

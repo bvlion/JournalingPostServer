@@ -7,7 +7,7 @@ JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を
 1. 解析時刻ごろに対象端末へFCMを送る（Issue #3）
 2. Androidから受け取ったJournalEntryをAI解析して結果を返す（Issue #4）
 
-このリポジトリの現時点の内容は、Issue #1「Hosted解析サービスの基盤を構築する」で用意した**サーバーの土台のみ**です。Hosted機能そのものはまだ実装していません（[未実装のもの](#未実装のもの)を参照）。
+このリポジトリの現時点の内容は、Issue #7「Server実装基盤を用意する」で整えた**サーバーの土台のみ**です。Hosted機能そのものはまだ実装していません（[未実装のもの](#未実装のもの)を参照）。Hosted Server全体は親Issue #1 で管理しています。
 
 ## 技術構成
 
@@ -19,6 +19,7 @@ JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を
 | データベース | MySQL 5.7系 |
 | 環境変数 | vlucas/phpdotenv |
 | マイグレーション | SQLファイルベースの自作ランナー（`bin/migrate.php`） |
+| 時刻の扱い | UTC固定（設定項目にしない） |
 | テスト | PHPUnit（unit / integration） |
 | コーディング規約 | PHP_CodeSniffer（PSR-12） |
 | ローカル開発 | Docker Compose（PHP 8.5 CLI + MySQL 5.7） |
@@ -26,8 +27,7 @@ JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を
 
 方針は次のとおりです。
 
-- APIはHTTPリクエスト内で処理を完了する同期処理とします。
-- `/health`エンドポイントは実装しません。
+- APIはHTTPリクエスト内で処理を完了する同期処理を第一候補とします（恒久的な制約ではありません。Issue #4で同期処理が成立しないと実測できた場合に限り、非同期化を検討します）。
 - 不要な抽象化、DIコンテナ、基底Repository、ORM、過剰なClean Architectureは導入しません。
 - 本番はDocker化しません。DockerはローカルPCの開発・検証でのみ使用します。
 
@@ -43,16 +43,15 @@ cp .env.example .env
 
 | 環境変数 | 用途 |
 | --- | --- |
-| `APP_TIMEZONE` | アプリケーションおよびDBセッションのタイムゾーン |
 | `DB_HOST` | データベースのホスト |
 | `DB_PORT` | データベースのポート |
 | `DB_NAME` | データベース名 |
 | `DB_USER` | データベースのユーザー名 |
 | `DB_PASSWORD` | データベースのパスワード |
 
-すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。
+すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`.env.example`の値はすべて実データから生成していない架空値です。
 
-Push予約（`triggerAt`）は絶対時刻として扱うため、既定のタイムゾーンは`UTC`です。`.env.example`の値はすべて実データから生成していない架空値です。
+タイムゾーンは環境変数にしていません。Hosted Serverはユーザーのtimezoneやrecurrenceを解釈せず、Androidが計算した絶対時刻（`triggerAt`）だけを扱うため、PHPの既定タイムゾーンとMySQLのセッションタイムゾーンをUTCへ固定しています。表示のためのtimezone変換は端末側の責務です。
 
 ## ローカル実行
 
@@ -95,14 +94,9 @@ docker compose run --rm app composer migrate
 - 適用済みファイルは変更せず、新しいファイルで差分を追加します。
 - 本番データ、ダンプ、個人情報、秘密情報はマイグレーションへ含めません。
 
-現在のテーブルは次の2つだけです。
+現在のテーブルは`schema_migrations`（適用済みマイグレーションの記録。`database/schema_migrations.sql`）だけです。`database/migrations`は空で、業務テーブルは1つも作成していません。**将来必要になりそうなテーブルは先回りして作成しません。** 最初の実テーブル（匿名installation・Push予約）はIssue #2 / #3で追加します。
 
-| テーブル | 用途 |
-| --- | --- |
-| `schema_migrations` | 適用済みマイグレーションの記録（`database/schema_migrations.sql`） |
-| `migration_check` | マイグレーション機構の動作確認専用。業務データは持たない |
-
-`migration_check`は、マイグレーションが実際に適用されることを確認するためだけの足場です。Issue #2 / #3で最初の実テーブル（匿名installation・Push予約）を追加する際に、`DROP TABLE`するマイグレーションを追加して削除します。**将来必要になりそうなテーブルは先回りして作成しません。**
+マイグレーション機構そのものの動作確認は、`tests/Integration/MigrationRunnerTest.php`が一時ディレクトリへその場限りのマイグレーションを生成し、適用・記録・再実行・ファイル名順の適用を検証します。動作確認だけを目的とした永続テーブルは`database/migrations`へ置きません。
 
 本番環境では、環境変数と依存関係を設定した後、XServerのPHP 8.5.5を明示して適用します。
 
@@ -123,8 +117,8 @@ docker compose run --rm app composer test                # unit + integration（
 
 テストは2つのtestsuiteに分かれています。
 
-- `tests/Unit`: DBを必要としないテスト（設定読み込み、接続失敗時の情報漏洩防止、Slimの404応答）
-- `tests/Integration`: MySQLコンテナへ実接続するテスト（接続設定、マイグレーションの適用と再実行）
+- `tests/Unit`: DBを必要としないテスト（設定読み込み、UTC固定、接続失敗時の情報漏洩防止、Slimの404応答）
+- `tests/Integration`: MySQLコンテナへ実接続するテスト（接続設定、一時マイグレーションによるマイグレーション機構の検証）
 
 ### 検証環境（`make check`）
 
@@ -160,11 +154,11 @@ make check-clean
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送する
 - XServer CronはIssue #3で使用予定
 
-**本Issue（#1）では本番デプロイを行っていません。** XServer上のファイル・DB・cron・秘密情報にも触れていません。
+**本番デプロイは行っていません。** XServer上のファイル・DB・cron・秘密情報にも触れていません。
 
 ## 未実装のもの
 
-Issue #1の範囲はサーバーの土台までです。次はいずれも未実装で、後続Issueで扱います。
+Issue #7の範囲はサーバーの土台までです。次はいずれも未実装で、後続Issueで扱います。
 
 - Hosted解析APIとAndroid間のデータ契約（#2）
 - 匿名installation認証方式の決定（#2）
@@ -172,7 +166,7 @@ Issue #1の範囲はサーバーの土台までです。次はいずれも未実
 - Hosted AI解析、OpenAI等のAI provider連携（#4）
 - rate limit、usage集計、コスト制御（#5）
 - 実データ用テーブル（installation / scheduled trigger など）
-- APIルート全般（現時点でルートは1つも定義していません）
+- APIルート全般（現時点でルートは1つも定義していません。`/health`を作るかどうかも未決定です）
 - account / profile、timezone、recurrence、entitlement、広告
 - 非同期job queue、Cloud Functions / Cloud Run
 - 本番デプロイおよびデプロイ自動化

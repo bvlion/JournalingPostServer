@@ -15,9 +15,6 @@ final class ConfigurationTest extends TestCase
 
         self::assertSame(
             [
-                'app' => [
-                    'timezone' => 'UTC',
-                ],
                 'database' => [
                     'host' => 'database',
                     'port' => '3306',
@@ -30,10 +27,16 @@ final class ConfigurationTest extends TestCase
         );
     }
 
+    public function testDefaultTimeZoneIsFixedToUtc(): void
+    {
+        require __DIR__ . '/../../bootstrap/config.php';
+
+        self::assertSame('UTC', date_default_timezone_get());
+    }
+
     public function testEachRequiredEnvironmentVariableIsValidated(): void
     {
         $requiredEnvironmentVariables = [
-            'APP_TIMEZONE',
             'DB_HOST',
             'DB_PORT',
             'DB_NAME',

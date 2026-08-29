@@ -8,7 +8,7 @@ use JournalingPostServer\Tests\Integration\Support\DatabaseTestCase;
 
 final class DatabaseConnectionTest extends DatabaseTestCase
 {
-    public function testConnectionUsesUtf8mb4AndConfiguredTimeZone(): void
+    public function testConnectionUsesUtf8mb4AndUtcSessionTimeZone(): void
     {
         $connection = self::createConnection();
 

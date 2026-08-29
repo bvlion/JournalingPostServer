@@ -15,7 +15,6 @@ $connection = (new ConnectionFactory(
     $databaseConfiguration['name'],
     $databaseConfiguration['user'],
     $databaseConfiguration['password'],
-    new DateTimeZone($configuration['app']['timezone']),
 ))->create();
 
 $appliedMigrations = (new MigrationRunner(
