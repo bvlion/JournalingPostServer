@@ -1,0 +1,44 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    depends_on:
+      database:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    volumes:
+      - .:/app
+      - vendor:/app/vendor
+
+  database:
+    image: mysql:5.7
+    # 公式の mysql:5.7 は linux/amd64 のイメージしか提供していない。Apple Silicon
+    # (linux/arm64) でもエミュレーションで起動できるよう、本番と同じMySQL 5.7を
+    # 維持したままplatformを明示する。
+    platform: linux/amd64
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-example_database}
+      MYSQL_USER: ${DB_USER:-example_database_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-example_database_password}
+      MYSQL_ROOT_PASSWORD: example_root_password
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          MYSQL_PWD="$${MYSQL_PASSWORD}"
+          mysqladmin ping -h 127.0.0.1 -u"$${MYSQL_USER}" --silent
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - database:/var/lib/mysql
+
+volumes:
+  database:
+  vendor:

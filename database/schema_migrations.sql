@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version VARCHAR(255) NOT NULL,
+    applied_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (version)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;

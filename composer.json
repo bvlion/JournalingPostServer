@@ -1,0 +1,42 @@
+{
+    "name": "bvlion/journaling-post-server",
+    "description": "Minimal HTTP API server foundation for JournalingPost hosted features",
+    "type": "project",
+    "require": {
+        "php": "^8.5",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "ext-pdo": "*",
+        "ext-pdo_mysql": "*",
+        "slim/psr7": "^1.8",
+        "slim/slim": "^4.15",
+        "vlucas/phpdotenv": "^5.6"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^13.2",
+        "squizlabs/php_codesniffer": "^4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "JournalingPostServer\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "JournalingPostServer\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "platform": {
+            "php": "8.5.5"
+        },
+        "sort-packages": true
+    },
+    "scripts": {
+        "lint": "find bin bootstrap public src tests -name '*.php' -print0 | xargs -0 -n1 php -l",
+        "migrate": "@php bin/migrate.php",
+        "style": "phpcs",
+        "test": "phpunit",
+        "test:unit": "phpunit --testsuite unit"
+    }
+}

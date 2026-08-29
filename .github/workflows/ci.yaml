@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # git diff --check が base 側のcommitを必要とするため、履歴を
+          # 切り詰めずに取得する。
+          fetch-depth: 0
+
+      # ローカルの検証用Compose(compose.check.yaml)と同じ入口を使用する。
+      # make check は検証専用のCompose projectだけを使い、
+      # 成功・失敗にかかわらず自分自身でcleanupする。
+      - name: make check
+        run: make check
+
+      # clean checkoutではworking treeに変更がないため、`git diff --check HEAD`
+      # は常に成功してしまい、commit済みの差分を検査できない。base...head の
+      # commit済み差分を明示的に比較する。
+      # pull_request では PR の差分、push(main) では push された範囲を対象とする。
+      - name: git diff --check
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: git diff --check "$BASE_SHA...$HEAD_SHA"
