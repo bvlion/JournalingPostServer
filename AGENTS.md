@@ -46,13 +46,13 @@
 ## Docker運用の安全ルール
 
 - 開発用（`compose.yaml`）のCompose project名は固定しません。Composeがチェックアウト先のディレクトリ名から導出した名前をそのまま使います。別のcloneやgit worktreeが自然に別projectへ分離され、既存の開発環境を共有・再作成しないためです。`compose.yaml`へ`name:`を追加しません。
-- 検証用（`make check`）のproject名も固定しません。Makefileが、Composeの解決した開発用project名へ`-check`を付けて導出し、`-p`で明示します。導出のため開発用と同じ名前にはならず、`down --volumes`が開発用のcontainer・network・volumeを対象にすることはありません。
+- 検証用（`make check`）のproject名も固定しません。Makefileが`journalingpostserver-check-<チェックアウトの絶対パスのhash>`を導出し、`-p`で明示します。ディレクトリ名に依存しないため、このチェックアウトの開発用projectとも、他のチェックアウトの開発用projectとも一致しません。`down --volumes`が開発用のcontainer・network・volumeを対象にすることはありません。
 - 作業対象のcontainer・network・volumeがどのprojectのものか分からない場合は、`docker compose ls`で確認してから操作します。
 - 同じDocker Desktop上で他プロジェクトのcontainer・network・volumeが動作しています。他プロジェクトのリソースへ触れません。
 - 起動中の開発用Docker環境（container・network・volume）を、利用者の明示的な許可なしに再作成・削除しません。
 - 開発用の`database` volumeを、利用者の明示的な許可なしに削除しません（`docker compose down --volumes`を無断で実行しません）。
 - 実`.env`、実データベース、FCM・AI providerなど実外部サービスへ、利用者の明示的な許可なしに接続しません。
-- 通常の検証には`make check`を使用します。`make check`は検証専用のCompose project（開発用project名 + `-check`）だけを使い、開発用のcontainer・network・volume・host portには触れません。
+- 通常の検証には`make check`を使用します。`make check`は検証専用のCompose projectだけを使い、開発用のcontainer・network・volume・host portには触れません。
 - 上記について判断できない場合は、実行せず作業を止めて確認します。
 
 ## 本番環境の安全ルール

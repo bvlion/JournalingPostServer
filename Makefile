@@ -4,14 +4,24 @@
 DEV_PROJECT := $(shell docker compose config 2>/dev/null \
 	| awk -F': *' '/^name:/{print $$2; exit}')
 
+# チェックアウトを識別する短いhash。絶対パスをGitのhash-objectへ通して得る。
+# 同じチェックアウトなら常に同じ値になるため、make check-clean でも同じ検証用
+# project名を再現できる。gitはリポジトリ取得に既に使用しているため追加依存は
+# 発生せず、macOS・Linuxの両方で同じ値が得られる。
+CHECKOUT_ID := $(shell printf '%s' '$(CURDIR)' | git hash-object --stdin | cut -c1-8)
+
 # 検証用（make check）のCompose project名。
 #
-# 固定値にすると、チェックアウト先のディレクトリ名がその固定値と一致したときに
-# 検証用と開発用が同じprojectになり、cleanupの down --volumes が開発用の
-# container・network・volumeを削除してしまう。そのため固定せず、開発用の
-# project名へ接尾辞を付けて導出する。接尾辞は必ず1文字以上あるので、開発用と
-# 検証用が同じ名前になることはない。
-CHECK_PROJECT := $(DEV_PROJECT)-check
+# 開発用のproject名はチェックアウト先のディレクトリ名から導出されるため、検証用を
+# 固定値や「開発用 + 接尾辞」にすると、別チェックアウトの開発用project名と一致し
+# うる。例えばディレクトリ foo の検証用 foo-check は、ディレクトリ foo-check の
+# 開発用project名と同じである。その場合、cleanupの down --volumes が別チェック
+# アウトの開発用container・network・volumeを削除してしまう。
+#
+# そこで、ディレクトリ名そのものではなくチェックアウト固有のhashを名前へ含める。
+# これによりディレクトリ名に依存せず、他のチェックアウトの開発用project名と
+# 一致しない。
+CHECK_PROJECT := journalingpostserver-check-$(CHECKOUT_ID)
 
 # 検証専用のCompose構成（compose.check.yaml）を、検証専用のproject名・
 # --env-file .env.example で実行する。Composeの変数展開にも実.envを使わない。
@@ -23,6 +33,10 @@ CHECK_COMPOSE = docker compose -f compose.check.yaml -p $(CHECK_PROJECT) --env-f
 # 実行するターゲットの前に必ず確認する。開発用project名を解決できなかった
 # 場合も、意図しないproject名で操作しないようここで停止する。
 guard-check-project:
+	@if [ -z "$(CHECKOUT_ID)" ]; then \
+		echo "[中止] チェックアウト識別子を生成できませんでした（gitが必要です）。" >&2; \
+		exit 1; \
+	fi
 	@if [ -z "$(DEV_PROJECT)" ]; then \
 		echo "[中止] 開発用Compose project名を解決できませんでした。" >&2; \
 		exit 1; \

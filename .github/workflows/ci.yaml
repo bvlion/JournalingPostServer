@@ -22,8 +22,8 @@ jobs:
           fetch-depth: 0
 
       # ローカルの検証用Compose(compose.check.yaml)と同じ入口を使用する。
-      # make check は検証専用のCompose project(開発用project名 + -check)
-      # だけを使い、成功・失敗にかかわらず自分自身でcleanupする。
+      # make check は検証専用のCompose projectだけを使い、
+      # 成功・失敗にかかわらず自分自身でcleanupする。
       - name: make check
         run: make check
 
