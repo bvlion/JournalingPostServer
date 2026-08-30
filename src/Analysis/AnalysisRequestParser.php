@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Exception;
 use JournalingPostServer\Http\ApiException;
+use stdClass;
 
 /**
  * Hosted解析requestのJSONを検証し、`AnalysisRequest`へ変換する。
@@ -19,6 +20,11 @@ use JournalingPostServer\Http\ApiException;
  *
  * 検証エラーはすべて集めて1度に返す。`details`にはフィールドパスと違反内容だけを
  * 入れ、受け取った値（JournalEntry本文を含む）は入れない。
+ *
+ * 入力は`json_decode()`をassociativeにせず復号した値である。JSON objectは
+ * `stdClass`、JSON arrayはPHPの配列になり、JSON上の型がそのまま残る。
+ * associativeで復号すると`{"0":…}`のようなJSON objectが整数キーの配列になり、
+ * `array_is_list()`でJSON arrayと区別できなくなる。
  */
 final class AnalysisRequestParser
 {
@@ -47,10 +53,7 @@ final class AnalysisRequestParser
         . '(?:Z|(?<offsetSign>[+-])(?<offsetHour>\d{2}):(?<offsetMinute>\d{2}))'
         . '\z/';
 
-    /**
-     * @param array<array-key, mixed> $payload
-     */
-    public static function parse(array $payload): AnalysisRequest
+    public static function parse(stdClass $payload): AnalysisRequest
     {
         /** @var list<string> $violations */
         $violations = [];
@@ -71,30 +74,29 @@ final class AnalysisRequestParser
     }
 
     /**
-     * @param array<array-key, mixed> $payload
      * @param list<string> $violations
      * @return array{DateTimeImmutable, DateTimeImmutable}
      */
     private static function parsePeriod(
-        array $payload,
+        stdClass $payload,
         array &$violations,
     ): array {
         $epoch = new DateTimeImmutable('@0');
-        $period = $payload['period'] ?? null;
+        $period = $payload->period ?? null;
 
-        if (!self::isJsonObject($period)) {
+        if (!$period instanceof stdClass) {
             $violations[] = 'period: must be an object.';
 
             return [$epoch, $epoch];
         }
 
         $start = self::parseTimestamp(
-            $period['start'] ?? null,
+            $period->start ?? null,
             'period.start',
             $violations,
         );
         $end = self::parseTimestamp(
-            $period['end'] ?? null,
+            $period->end ?? null,
             'period.end',
             $violations,
         );
@@ -107,17 +109,18 @@ final class AnalysisRequestParser
     }
 
     /**
-     * @param array<array-key, mixed> $payload
      * @param list<string> $violations
      * @return list<AnalysisEntry>
      */
     private static function parseEntries(
-        array $payload,
+        stdClass $payload,
         array &$violations,
     ): array {
-        $entries = $payload['entries'] ?? null;
+        $entries = $payload->entries ?? null;
 
-        if (!is_array($entries) || !array_is_list($entries)) {
+        // JSON arrayだけが配列になる。JSON objectは`stdClass`のままなので、
+        // `{"0":…}`のようなキーでもarrayとして受理されない。
+        if (!is_array($entries)) {
             $violations[] = 'entries: must be an array.';
 
             return [];
@@ -145,24 +148,24 @@ final class AnalysisRequestParser
         foreach ($entries as $index => $entry) {
             $path = sprintf('entries[%d]', $index);
 
-            if (!self::isJsonObject($entry)) {
+            if (!$entry instanceof stdClass) {
                 $violations[] = sprintf('%s: must be an object.', $path);
 
                 continue;
             }
 
             $recordedAt = self::parseTimestamp(
-                $entry['recordedAt'] ?? null,
+                $entry->recordedAt ?? null,
                 $path . '.recordedAt',
                 $violations,
             );
             [$moodEmoji, $moodLabel] = self::parseMood(
-                $entry['mood'] ?? null,
+                $entry->mood ?? null,
                 $path . '.mood',
                 $violations,
             );
             $note = self::parseNote(
-                $entry['note'] ?? null,
+                $entry->note ?? null,
                 $path . '.note',
                 $violations,
             );
@@ -199,20 +202,20 @@ final class AnalysisRequestParser
             return [null, null];
         }
 
-        if (!self::isJsonObject($mood)) {
+        if (!$mood instanceof stdClass) {
             $violations[] = sprintf('%s: must be an object or null.', $path);
 
             return [null, null];
         }
 
         $emoji = self::parseRequiredText(
-            $mood['emoji'] ?? null,
+            $mood->emoji ?? null,
             $path . '.emoji',
             self::MAX_MOOD_EMOJI_LENGTH,
             $violations,
         );
         $label = self::parseRequiredText(
-            $mood['label'] ?? null,
+            $mood->label ?? null,
             $path . '.label',
             self::MAX_MOOD_LABEL_LENGTH,
             $violations,
@@ -284,16 +287,6 @@ final class AnalysisRequestParser
         }
 
         return trim($note) === '' ? null : $note;
-    }
-
-    /**
-     * 空のJSON object（`{}`）はPHPで空配列になりlistと区別できない。項目欠落と
-     * して個別に検証できるよう、objectとして通す。
-     */
-    private static function isJsonObject(mixed $value): bool
-    {
-        return is_array($value)
-            && ($value === [] || !array_is_list($value));
     }
 
     /**

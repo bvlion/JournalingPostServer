@@ -362,74 +362,64 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * `purgeExpired()`が動いていなくても、失効した完了記録とその引き渡し
-     * バッファをclaimの判定が拾わない。境界（`now == expires_at`）を含める。
+     * requestの開始時に取得した`$now`の後で行が失効した場合でも、失効した完了
+     * 記録と引き渡しバッファを返さない。失効判定は`$now`ではなく判定時点の
+     * 現在時刻で行う。
      *
-     * repositoryを直接呼び、`purgeExpired()`を経由しない状態を作っている。
+     * `purgeExpired()`を経由せずrepositoryの`claim()`を直接呼び、`$now`には
+     * 失効前の時刻（request開始時に取得した値に相当）を渡している。
      */
-    public function testExpiryIsRecheckedWhenClaimingWithoutAPurge(): void
+    public function testExpiryIsEvaluatedAtDecisionTimeNotAtRequestStart(): void
     {
         $apiKey = $this->register();
         $this->analyse($apiKey);
-        $expiresAt = new DateTimeImmutable(
-            (string) $this->connection
-                ->query('SELECT expires_at FROM analysis_requests')
-                ->fetchColumn(),
-        );
+        // `$now`の取得後に失効した状態にする。
+        $this->expireStoredAnalyses();
 
-        // 失効時刻ちょうど。`expires_at <= now`なので失効として扱う。
-        $claim = $this->claimDirectly($expiresAt);
+        $claim = $this->claimDirectly(
+            $this->storedExpiry()->modify('-1 second'),
+        );
 
         self::assertSame(AnalysisClaim::Granted, $claim);
         self::assertSame(0, $this->countRows('analysis_deliveries'));
     }
 
     /**
-     * 失効直前は完了済みとして扱い、同じ結果を返せる状態を保つ。
-     */
-    public function testUnexpiredCompletedClaimIsStillReplayable(): void
-    {
-        $apiKey = $this->register();
-        $this->analyse($apiKey);
-        $expiresAt = new DateTimeImmutable(
-            (string) $this->connection
-                ->query('SELECT expires_at FROM analysis_requests')
-                ->fetchColumn(),
-        );
-
-        $claim = $this->claimDirectly($expiresAt->modify('-1 microsecond'));
-
-        self::assertSame(AnalysisClaim::Completed, $claim);
-        self::assertSame(1, $this->countRows('analysis_deliveries'));
-    }
-
-    /**
-     * 完了していない失効済みclaimも、判定時に失効を確認して新しく取得できる。
+     * 完了していない失効済みclaimも同様に、判定時点で失効を確認して新しく
+     * 取得できる。
      */
     public function testExpiredUnfinishedClaimIsRecheckedWhenClaiming(): void
     {
         $this->register();
         $this->beginUnfinishedAnalysis('now');
-        $expiresAt = new DateTimeImmutable(
-            (string) $this->connection
-                ->query('SELECT expires_at FROM analysis_requests')
-                ->fetchColumn(),
-        );
+        $this->expireStoredAnalyses();
 
-        $claim = $this->claimDirectly($expiresAt);
+        $claim = $this->claimDirectly(
+            $this->storedExpiry()->modify('-1 second'),
+        );
 
         self::assertSame(AnalysisClaim::Granted, $claim);
-        self::assertSame(
-            1,
-            (int) $this->connection
-                ->query('SELECT COUNT(*) FROM analysis_requests')
-                ->fetchColumn(),
-        );
+        self::assertSame(1, $this->countRows('analysis_requests'));
         self::assertNull(
             $this->connection
                 ->query('SELECT completed_at FROM analysis_requests')
                 ->fetchColumn(),
         );
+    }
+
+    /**
+     * 失効していない行は、呼び出し元が渡した`$now`が失効時刻を過ぎていても
+     * 完了済みとして扱う。判定に使うのは実際の現在時刻だけである。
+     */
+    public function testUnexpiredCompletedClaimIsStillReplayable(): void
+    {
+        $apiKey = $this->register();
+        $this->analyse($apiKey);
+
+        $claim = $this->claimDirectly($this->storedExpiry());
+
+        self::assertSame(AnalysisClaim::Completed, $claim);
+        self::assertSame(1, $this->countRows('analysis_deliveries'));
     }
 
     /**
@@ -486,6 +476,15 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         );
     }
 
+    private function storedExpiry(): DateTimeImmutable
+    {
+        return new DateTimeImmutable(
+            (string) $this->connection
+                ->query('SELECT expires_at FROM analysis_requests')
+                ->fetchColumn(),
+        );
+    }
+
     /**
      * `purgeExpired()`を経由せずにclaimだけを実行する。
      */
@@ -495,8 +494,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             ->claim(
                 $this->installationId(),
                 self::KEY,
-                AnalysisRequestParser::parse(self::requestPayload())
-                    ->fingerprint(),
+                self::requestFingerprint(),
                 $now,
                 $now->modify(
                     sprintf(
@@ -608,6 +606,28 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
         self::assertSame(0, $this->analyzer->callCount);
         self::assertSame(0, $this->countRows('analysis_requests'));
+    }
+
+    /**
+     * `entries`はJSON arrayのときだけ受理する。`{"0":…}`のようなJSON objectは
+     * associativeな`json_decode()`では整数キーの配列になり、`array_is_list()`
+     * を通過してarrayとして受理されてしまう。
+     */
+    public function testEntriesGivenAsAJsonObjectIsRejected(): void
+    {
+        $response = $this->analyse(
+            $this->register(),
+            body: '{"period":{"start":"2026-08-29T00:00:00Z",'
+                . '"end":"2026-08-29T09:00:00Z"},'
+                . '"entries":{"0":{"recordedAt":"2026-08-29T01:15:00Z"},'
+                . '"1":{"recordedAt":"2026-08-29T05:40:00Z"}}}',
+        );
+        $error = self::payload($response)['error'];
+
+        self::assertSame(422, $response->getStatusCode());
+        self::assertSame('validation_error', $error['code']);
+        self::assertSame(['entries: must be an array.'], $error['details']);
+        self::assertSame(0, $this->analyzer->callCount);
     }
 
     /**
@@ -750,9 +770,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             ->execute([
                 'installation_id' => $this->installationId(),
                 'idempotency_key' => self::KEY,
-                'fingerprint' => AnalysisRequestParser::parse(
-                    self::requestPayload(),
-                )->fingerprint(),
+                'fingerprint' => self::requestFingerprint(),
                 'started_at' => $startedAt->format('Y-m-d H:i:s.u'),
                 'expires_at' => $startedAt
                     ->modify(
@@ -880,6 +898,24 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
                 ],
             ],
         ];
+    }
+
+    /**
+     * parserはassociativeにしない`json_decode()`の結果を受け取る。テストの
+     * 配列もJSONを経由してJSON上の型どおりの値へ変換する。
+     */
+    private static function requestFingerprint(): string
+    {
+        return AnalysisRequestParser::parse(
+            json_decode(
+                json_encode(
+                    (object) self::requestPayload(),
+                    JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE,
+                ),
+                false,
+                flags: JSON_THROW_ON_ERROR,
+            ),
+        )->fingerprint();
     }
 
     /**

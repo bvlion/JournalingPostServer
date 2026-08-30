@@ -15,6 +15,7 @@ use JournalingPostServer\Analysis\AnalysisRequestRepository;
 use JournalingPostServer\Analysis\Analyzer;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use stdClass;
 use Throwable;
 
 /**
@@ -50,9 +51,6 @@ final class CreateAnalysisAction
     private const IDEMPOTENCY_KEY_PATTERN = '/\A[A-Za-z0-9_-]{16,64}\z/';
 
     private const RESPONSE_TIMESTAMP_FORMAT = 'Y-m-d\TH:i:s\Z';
-
-    /** JSONのrootがobjectか。有効なJSONではこの1文字でroot typeが決まる。 */
-    private const JSON_OBJECT_PATTERN = '/\A\s*\{/';
 
     public function __construct(
         private AnalysisRequestRepository $analysisRequests,
@@ -249,7 +247,10 @@ final class CreateAnalysisAction
         }
 
         try {
-            $payload = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+            // associativeにしない。JSON objectを`stdClass`のまま扱うことで、
+            // `{}`と`[]`、`{"0":…}`とJSON arrayをJSON上の型で区別できる。
+            // associativeで復号すると、どちらもPHPの配列になり区別できない。
+            $payload = json_decode($body, false, flags: JSON_THROW_ON_ERROR);
         } catch (JsonException) {
             // 解析できなかったbodyは応答へ含めない（JournalEntry本文を含むため）。
             throw new ApiException(
@@ -259,14 +260,9 @@ final class CreateAnalysisAction
             );
         }
 
-        // `json_decode(..., true)`では`{}`と`[]`がどちらも空配列になり、
-        // rootがobjectだったかを復元できない。契約ではobject以外のrootが
-        // `400 invalid_request`、objectの中身の違反が`422 validation_error`で
-        // 区別されるため、root typeはdecode前のJSON表記で判定する。
-        if (
-            !is_array($payload)
-            || preg_match(self::JSON_OBJECT_PATTERN, $body) !== 1
-        ) {
+        // rootがobjectでなければ`400 invalid_request`、rootはobjectで中身が
+        // 契約に反する場合は`422 validation_error`である。
+        if (!$payload instanceof stdClass) {
             throw new ApiException(
                 400,
                 'invalid_request',

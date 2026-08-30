@@ -55,7 +55,13 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 ## Cron
 
 - XServer Cronを利用できる。
-- 失効した解析metadataと解析結果の引き渡しバッファの削除に使用する。5分間隔で`/opt/php-8.5.5/bin/php bin/prune-expired-analyses.php`を実行する。解析requestの処理中にも削除するが、requestが来なくなった期間はそれだけでは動かないため、解析結果本文が保持期間を越えて残らないようにするにはCronが必要である。
+- 失効した解析metadataと解析結果の引き渡しバッファの削除に使用する。解析requestの処理中にも削除するが、requestが来なくなった期間はそれだけでは動かないため、解析結果本文が保持期間を越えて残らないようにするにはCronが必要である。
+- Cronの作業ディレクトリはアプリ本体の配置ディレクトリである保証がない。スクリプトのパスを相対で書かず、配置ディレクトリへ移動してから実行する。5分間隔で次を実行する（`<アプリ本体の配置ディレクトリ>`は「配置構成」で決めた実際のパスに置き換える。実際のパスはリポジトリへ記録しない）。
+
+```shell
+cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
+```
+
 - Cronの用途はこの削除だけである。ServerはPush予約やscheduler機能を持たない。
 - 本番Cronは未設定である。配置時に設定する。設定しない場合、解析結果本文が保持期間を越えてDBへ残る。
 

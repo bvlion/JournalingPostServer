@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace JournalingPostServer\Tests\Unit;
 
+use JournalingPostServer\Analysis\AnalysisRequest;
 use JournalingPostServer\Analysis\AnalysisRequestParser;
 use JournalingPostServer\Http\ApiException;
 use PHPUnit\Framework\TestCase;
@@ -15,7 +16,7 @@ final class AnalysisRequestParserTest extends TestCase
 {
     public function testAcceptsMoodOnlyNoteOnlyAndCombinedEntries(): void
     {
-        $request = AnalysisRequestParser::parse(self::payload([
+        $request = self::parse(self::payload([
             ['recordedAt' => '2026-08-29T00:30:00Z', 'mood' => self::mood()],
             ['recordedAt' => '2026-08-29T01:30:00Z', 'note' => '架空のメモ'],
             [
@@ -35,7 +36,7 @@ final class AnalysisRequestParserTest extends TestCase
 
     public function testPeriodIsNormalisedToUtc(): void
     {
-        $request = AnalysisRequestParser::parse([
+        $request = self::parse([
             'period' => [
                 'start' => '2026-08-29T09:00:00+09:00',
                 'end' => '2026-08-29T18:00:00+09:00',
@@ -61,7 +62,7 @@ final class AnalysisRequestParserTest extends TestCase
      */
     public function testFingerprintIgnoresEquivalentRepresentations(): void
     {
-        $utc = AnalysisRequestParser::parse([
+        $utc = self::parse([
             'period' => [
                 'start' => '2026-08-29T00:00:00Z',
                 'end' => '2026-08-29T09:00:00Z',
@@ -70,7 +71,7 @@ final class AnalysisRequestParserTest extends TestCase
                 ['recordedAt' => '2026-08-29T03:00:00.000Z', 'note' => '架空のメモ'],
             ],
         ]);
-        $offset = AnalysisRequestParser::parse([
+        $offset = self::parse([
             'entries' => [
                 ['note' => '架空のメモ', 'recordedAt' => '2026-08-29T12:00:00+09:00'],
             ],
@@ -85,13 +86,13 @@ final class AnalysisRequestParserTest extends TestCase
 
     public function testFingerprintChangesWithContent(): void
     {
-        $original = AnalysisRequestParser::parse(self::payload([
+        $original = self::parse(self::payload([
             ['recordedAt' => '2026-08-29T00:30:00Z', 'note' => '架空のメモ'],
         ]));
-        $edited = AnalysisRequestParser::parse(self::payload([
+        $edited = self::parse(self::payload([
             ['recordedAt' => '2026-08-29T00:30:00Z', 'note' => '別の架空のメモ'],
         ]));
-        $reordered = AnalysisRequestParser::parse(self::payload([
+        $reordered = self::parse(self::payload([
             ['recordedAt' => '2026-08-29T00:30:00Z', 'note' => '架空のメモ'],
             ['recordedAt' => '2026-08-29T01:30:00Z', 'note' => '別の架空のメモ'],
         ]));
@@ -232,7 +233,7 @@ final class AnalysisRequestParserTest extends TestCase
 
     public function testValidBoundaryTimestampsAreAccepted(): void
     {
-        $request = AnalysisRequestParser::parse([
+        $request = self::parse([
             'period' => [
                 'start' => '2024-02-29T00:00:00Z',
                 'end' => '2024-03-01T23:59:59.999999+13:45',
@@ -255,6 +256,36 @@ final class AnalysisRequestParserTest extends TestCase
         );
     }
 
+    /**
+     * `{"0":…}`のようなJSON objectは、associativeな`json_decode()`では整数キーの
+     * 配列になり`array_is_list()`を通過する。JSON上の型で判定し、JSON arrayの
+     * 場合だけ受理する。
+     */
+    public function testEntriesGivenAsAJsonObjectAreRejected(): void
+    {
+        $payload = json_decode(
+            '{"period":{"start":"2026-08-29T00:00:00Z",'
+                . '"end":"2026-08-29T09:00:00Z"},'
+                . '"entries":{"0":{"recordedAt":"2026-08-29T00:30:00Z"}}}',
+            false,
+            flags: JSON_THROW_ON_ERROR,
+        );
+
+        try {
+            AnalysisRequestParser::parse($payload);
+        } catch (ApiException $exception) {
+            self::assertSame(422, $exception->status());
+            self::assertSame(
+                ['entries: must be an array.'],
+                $exception->details(),
+            );
+
+            return;
+        }
+
+        self::fail('JSON objectのentriesが受理されました。');
+    }
+
     public function testMissingPeriodAndEntriesAreReported(): void
     {
         self::assertSame(
@@ -269,7 +300,7 @@ final class AnalysisRequestParserTest extends TestCase
      */
     public function testUnknownFieldsAreIgnored(): void
     {
-        $request = AnalysisRequestParser::parse([
+        $request = self::parse([
             'period' => [
                 'start' => '2026-08-29T00:00:00Z',
                 'end' => '2026-08-29T09:00:00Z',
@@ -286,6 +317,24 @@ final class AnalysisRequestParserTest extends TestCase
         ]);
 
         self::assertCount(1, $request->entries);
+    }
+
+    /**
+     * parserはassociativeにしない`json_decode()`の結果を受け取る。JSON上の型を
+     * 保ったまま渡すため、テストの配列もJSONを経由して変換する。連想配列は
+     * JSON object（`stdClass`）、listはJSON array（配列）になる。
+     *
+     * @param array<string, mixed> $payload
+     */
+    private static function parse(array $payload): AnalysisRequest
+    {
+        return AnalysisRequestParser::parse(
+            json_decode(
+                json_encode((object) $payload, JSON_THROW_ON_ERROR),
+                false,
+                flags: JSON_THROW_ON_ERROR,
+            ),
+        );
     }
 
     /**
@@ -312,13 +361,13 @@ final class AnalysisRequestParserTest extends TestCase
     }
 
     /**
-     * @param array<array-key, mixed> $payload
+     * @param array<string, mixed> $payload
      * @return list<string>
      */
     private static function violations(array $payload): array
     {
         try {
-            AnalysisRequestParser::parse($payload);
+            self::parse($payload);
         } catch (ApiException $exception) {
             self::assertSame(422, $exception->status());
             self::assertSame('validation_error', $exception->errorCode());

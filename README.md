@@ -140,10 +140,10 @@ JournalEntry本文はDBへ保存しません。解析結果本文もServerの原
 docker compose run --rm app composer prune
 ```
 
-本番では、XServer Cronから5分間隔で実行します。
+本番では、XServer Cronから5分間隔で実行します。Cronの作業ディレクトリはアプリ本体の配置ディレクトリとは限らないため、移動してから実行します（`<アプリ本体の配置ディレクトリ>`は実際のパスに置き換えます）。
 
 ```shell
-/opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
+cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
 ```
 
 出力は削除件数だけで、本文やinstallation識別子をログへ残しません。

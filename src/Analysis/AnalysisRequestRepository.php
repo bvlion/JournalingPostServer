@@ -61,6 +61,9 @@ final class AnalysisRequestRepository
      * 前の処理がresponseを返さずに終わった場合、そのkeyは`expires_at`まで
      * 使えない。AI provider側のtimeout特性を踏まえた復帰の制御は、実providerを
      * 実装するIssue #4で判断する。
+     *
+     * `$now`と`$expiresAt`は新しく取得する行へ記録する値である。既存行が失効
+     * しているかどうかは`$now`ではなく判定時点の現在時刻で評価する。
      */
     public function claim(
         string $installationId,
@@ -140,15 +143,18 @@ final class AnalysisRequestRepository
             return null;
         }
 
-        // `purgeExpired()`とこの読み出しは別の操作であり、その間にこの行が
-        // 失効し得る。失効した完了記録やバッファをここで返さないよう、判定の
-        // 時点でも確認する。この判定は`purgeExpired()`が動いたかに依存しない。
-        if (new DateTimeImmutable($existing['expires_at']) <= $now) {
+        // 失効判定は読み出した時点の現在時刻で行う。`$now`はrequestの開始時に
+        // 取得した時刻であり、purgeの実行後もDB待ちの間に`expires_at`を越え得る
+        // ため、`$now`で判定すると失効した完了記録やバッファを返してしまう。
+        // この判定は`purgeExpired()`が動いたかにも依存しない。
+        $evaluatedAt = new DateTimeImmutable('now');
+
+        if (new DateTimeImmutable($existing['expires_at']) <= $evaluatedAt) {
             $this->discardExpired(
                 $connection,
                 $installationId,
                 $idempotencyKey,
-                $now,
+                $evaluatedAt,
             );
 
             // 失効した行は消えた。呼び出し元がやり直し、新しいrequestとして
