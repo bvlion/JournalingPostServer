@@ -10,7 +10,7 @@ use DateTimeImmutable;
  * 検証済みのHosted解析request。
  *
  * この値はrequest処理中だけ存在し、DBへ保存しない。DBへ残すのは
- * `fingerprint()`が返すhashだけで、hashからJournalEntry本文は復元できない。
+ * `fingerprint()`が返すhashだけである。
  */
 final class AnalysisRequest
 {
@@ -30,8 +30,18 @@ final class AnalysisRequest
      * 受信したJSONのbyte列ではなく、検証後の値を正規化してからhashする。
      * timestampはUTC・microsecond精度へ、keyの順序は固定へ揃えるため、
      * 意味が同じrequestは表記が違っても同じhashになる。
+     *
+     * 素のSHA-256にしない。mood 1件だけのrequestのように入力空間が狭い場合、
+     * DBを読める側が期間・記録時刻・moodの候補から正規化JSONを列挙してhashを
+     * 突き合わせ、JournalEntryの内容を言い当てられるためである。Serverだけが
+     * 持つ`$secret`による鍵付きhash（HMAC）にして、DB単体では候補照合できない
+     * ようにする。
+     *
+     * `$installationId`をhashの入力へ含め、installation単位にscopeする。
+     * idempotencyの判定はinstallationの中で閉じており、installationを跨いだ
+     * 同一requestの相関はServerの用途に不要なためである。
      */
-    public function fingerprint(): string
+    public function fingerprint(string $installationId, string $secret): string
     {
         $canonical = [
             'period' => [
@@ -49,13 +59,16 @@ final class AnalysisRequest
             ),
         ];
 
-        return hash(
+        return hash_hmac(
             'sha256',
-            json_encode(
+            // installation識別子は固定長（UUID）だが、正規化JSONとの境界を
+            // 明示するため区切りを入れる。
+            $installationId . "\n" . json_encode(
                 $canonical,
                 JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE
                     | JSON_UNESCAPED_SLASHES,
             ),
+            $secret,
         );
     }
 

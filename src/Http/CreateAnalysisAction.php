@@ -52,9 +52,15 @@ final class CreateAnalysisAction
 
     private const RESPONSE_TIMESTAMP_FORMAT = 'Y-m-d\TH:i:s\Z';
 
+    /**
+     * @param string $fingerprintSecret 解析requestのfingerprintを鍵付きに
+     *        するための秘密値。DBを読める側が本文の候補を照合できないように
+     *        するためのもので、本番deployを跨いで同じ値を使う。
+     */
     public function __construct(
         private AnalysisRequestRepository $analysisRequests,
         private Analyzer $analyzer,
+        private string $fingerprintSecret,
     ) {
     }
 
@@ -80,12 +86,15 @@ final class CreateAnalysisAction
         $claim = $this->analysisRequests->claim(
             $installationId,
             $idempotencyKey,
-            $analysisRequest->fingerprint(),
+            $analysisRequest->fingerprint(
+                $installationId,
+                $this->fingerprintSecret,
+            ),
             $now,
             self::expiry($now),
         );
 
-        if ($claim === AnalysisClaim::KeyReuse) {
+        if ($claim->status === AnalysisClaim::KeyReuse) {
             throw new ApiException(
                 409,
                 'idempotency_key_reuse',
@@ -93,7 +102,7 @@ final class CreateAnalysisAction
             );
         }
 
-        if ($claim === AnalysisClaim::InProgress) {
+        if ($claim->status === AnalysisClaim::InProgress) {
             throw new ApiException(
                 409,
                 'analysis_in_progress',
@@ -104,10 +113,14 @@ final class CreateAnalysisAction
             );
         }
 
-        if ($claim === AnalysisClaim::Completed) {
+        if ($claim->status === AnalysisClaim::Completed) {
             return JsonResponse::writeBody(
                 $response,
-                $this->readDelivery($installationId, $idempotencyKey),
+                $this->readDelivery(
+                    $installationId,
+                    $idempotencyKey,
+                    $claim->claimedAt,
+                ),
             );
         }
 
@@ -115,7 +128,7 @@ final class CreateAnalysisAction
             $installationId,
             $idempotencyKey,
             $analysisRequest,
-            $now,
+            $claim->claimedAt,
         );
 
         return JsonResponse::writeBody($response, $responseBody);
@@ -185,19 +198,21 @@ final class CreateAnalysisAction
     private function readDelivery(
         string $installationId,
         string $idempotencyKey,
+        DateTimeImmutable $claimedAt,
     ): string {
-        // 期限は取得時点の現在時刻で確認する。claimの判定とこの取得の間にも
-        // 失効し得るため、判定時の時刻を持ち回らない。
+        // claimが完了と判定した世代からだけ読む。期限の判定はクエリの中で
+        // 行うため、ここで現在時刻を確定させない。
         $responseBody = $this->analysisRequests->findDelivery(
             $installationId,
             $idempotencyKey,
-            new DateTimeImmutable('now'),
+            $claimedAt,
         );
 
         if ($responseBody === null) {
             // 完了記録は残っているのに、返せる結果が無い状態。取得の直前に
-            // 失効した場合と、バッファだけが失われた場合がある。どちらも結果を
-            // 作り直せないことをAndroidへ伝える。
+            // 失効した場合、その世代が削除されて別の世代になった場合、
+            // バッファだけが失われた場合がある。いずれも結果を作り直せない
+            // ことをAndroidへ伝える。
             throw new ApiException(
                 409,
                 'analysis_result_unavailable',

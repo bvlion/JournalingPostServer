@@ -1,6 +1,8 @@
 -- 解析requestのidempotency metadata。JournalEntry本文・AnalysisResult本文は
--- ここへ保存しない。request_fingerprintは正規化したrequestのSHA-256であり、
--- 本文を復元できない。
+-- ここへ保存しない。request_fingerprintは正規化したrequestの鍵付きhash
+-- （HMAC-SHA-256）であり、本文を復元できない。鍵はDBの外（環境変数
+-- ANALYSIS_FINGERPRINT_SECRET）にあり、installation単位にscopeしているため、
+-- DBだけを読める状態では本文の候補を列挙して突き合わせることもできない。
 -- expires_atを過ぎた行は、解析requestの処理中と、XServer Cronから定期実行する
 -- bin/prune-expired-analyses.php の両方で削除する。後者が無いと、requestが来なく
 -- なった期間に失効した行が残り続ける。

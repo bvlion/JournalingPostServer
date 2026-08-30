@@ -64,6 +64,7 @@ return static function (?Analyzer $analyzer = null) use ($configuration): App {
         new CreateAnalysisAction(
             $analysisRequests,
             $analyzer ?? new UnavailableAnalyzer(),
+            $configuration['analysis']['fingerprintSecret'],
         ),
     )->add(new AuthenticationMiddleware($installations));
 

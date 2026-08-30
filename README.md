@@ -60,8 +60,15 @@ cp .env.example .env
 | `DB_NAME` | データベース名 |
 | `DB_USER` | データベースのユーザー名 |
 | `DB_PASSWORD` | データベースのパスワード |
+| `ANALYSIS_FINGERPRINT_SECRET` | 解析requestのfingerprintを鍵付きにするための秘密値（32文字以上） |
 
-すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`.env.example`の値はすべて実データから生成していない架空値です。
+すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`ANALYSIS_FINGERPRINT_SECRET`は32文字未満でも同じように失敗します。`.env.example`の値はすべて実データから生成していない架空値です。
+
+`ANALYSIS_FINGERPRINT_SECRET`は、DBを読める状態からJournalEntryの内容を候補照合で言い当てられないようにするためのものです（[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照）。ランダム値を1度だけ生成し、**deployを跨いで同じ値を使います**。値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になります。
+
+```shell
+php -r 'echo base64_encode(random_bytes(48)), PHP_EOL;'
+```
 
 タイムゾーンは環境変数にしていません。Hosted Serverはユーザーのtimezoneやrecurrenceを解釈せず、絶対時刻だけを扱うため、PHPの既定タイムゾーンとMySQLのセッションタイムゾーンをUTCへ固定しています。表示のためのtimezone変換は端末側の責務です。
 
@@ -127,7 +134,7 @@ SQLの適用と`schema_migrations`への記録は別のステートメントで�
 | --- | --- | --- |
 | `schema_migrations` | 適用済みマイグレーションの記録（`database/schema_migrations.sql`） | #7 |
 | `installations` | Server内部のinstallation識別子とAPI keyのSHA-256 | #2 |
-| `analysis_requests` | 解析requestのidempotency metadata（本文を含まない） | #2 |
+| `analysis_requests` | 解析requestのidempotency metadata（本文は含まず、鍵付きhashだけ） | #2 |
 | `analysis_deliveries` | 再送へ同じ結果を返すための解析結果の引き渡しバッファ | #2 |
 
 JournalEntry本文はDBへ保存しません。解析結果本文もServerの原本にはせず、引き渡しバッファへ保持期間（解析完了から30分）の間だけ残します。詳細は[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照してください。
@@ -205,6 +212,7 @@ make check-clean
 - MySQL 5.7系
 - Composer 2系。依存関係はリポジトリの`composer.lock`どおりに導入
 - `pdo_mysql` / `mbstring` / `json` / `openssl` / `curl`が利用可能
+- Hosted APIはHTTPSでのみ提供する（Bearer API keyとJournalEntry本文を平文HTTPで送らない）
 - アプリ本体はドキュメントルート外へ配置し、`public_html`には`public/index.php`へのシンボリックリンクと`public/.htaccess`のコピーだけを置く
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
 - XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Cronの用途はこれだけである

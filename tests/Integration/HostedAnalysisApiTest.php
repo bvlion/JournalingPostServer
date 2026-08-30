@@ -7,6 +7,7 @@ namespace JournalingPostServer\Tests\Integration;
 use DateTimeImmutable;
 use JournalingPostServer\Analysis\Analysis;
 use JournalingPostServer\Analysis\AnalysisClaim;
+use JournalingPostServer\Analysis\AnalysisClaimResult;
 use JournalingPostServer\Analysis\AnalysisRequest;
 use JournalingPostServer\Analysis\AnalysisRequestParser;
 use JournalingPostServer\Analysis\AnalysisRequestRepository;
@@ -382,7 +383,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             $this->storedExpiry()->modify('-1 second'),
         );
 
-        self::assertSame(AnalysisClaim::Granted, $claim);
+        self::assertSame(AnalysisClaim::Granted, $claim->status);
         self::assertSame(0, $this->countRows('analysis_deliveries'));
     }
 
@@ -400,7 +401,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             $this->storedExpiry()->modify('-1 second'),
         );
 
-        self::assertSame(AnalysisClaim::Granted, $claim);
+        self::assertSame(AnalysisClaim::Granted, $claim->status);
         self::assertSame(1, $this->countRows('analysis_requests'));
         self::assertNull(
             $this->connection
@@ -420,7 +421,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
         $claim = $this->claimDirectly($this->storedExpiry());
 
-        self::assertSame(AnalysisClaim::Completed, $claim);
+        self::assertSame(AnalysisClaim::Completed, $claim->status);
         self::assertSame(1, $this->countRows('analysis_deliveries'));
     }
 
@@ -478,6 +479,15 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         );
     }
 
+    private function storedStartedAt(): DateTimeImmutable
+    {
+        return new DateTimeImmutable(
+            (string) $this->connection
+                ->query('SELECT started_at FROM analysis_requests')
+                ->fetchColumn(),
+        );
+    }
+
     private function storedExpiry(): DateTimeImmutable
     {
         return new DateTimeImmutable(
@@ -490,13 +500,14 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     /**
      * `purgeExpired()`を経由せずにclaimだけを実行する。
      */
-    private function claimDirectly(DateTimeImmutable $now): AnalysisClaim
-    {
+    private function claimDirectly(
+        DateTimeImmutable $now,
+    ): AnalysisClaimResult {
         return (new AnalysisRequestRepository(fn (): PDO => $this->connection))
             ->claim(
                 $this->installationId(),
                 self::KEY,
-                self::requestFingerprint(),
+                $this->requestFingerprint(),
                 $now,
                 $now->modify(
                     sprintf(
@@ -509,8 +520,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
     /**
      * claimの判定と本文の取得は別のクエリであり、その間にも失効し得る。
-     * cleanupがまだ行を消していなくても、失効後の本文は返さない。境界は
-     * `expires_at`ちょうど（失効扱い）である。
+     * cleanupがまだ行を消していなくても、失効後の本文は返さない。
      */
     public function testExpiredDeliveryIsNotReturned(): void
     {
@@ -519,24 +529,71 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         $repository = new AnalysisRequestRepository(
             fn (): PDO => $this->connection,
         );
-        $expiresAt = $this->storedExpiry();
+        $claimedAt = $this->storedStartedAt();
 
         self::assertIsString(
             $repository->findDelivery(
                 $this->installationId(),
                 self::KEY,
-                $expiresAt->modify('-1 microsecond'),
+                $claimedAt,
             ),
         );
+
+        $this->expireStoredAnalyses();
+
         self::assertNull(
             $repository->findDelivery(
                 $this->installationId(),
                 self::KEY,
-                $expiresAt,
+                $claimedAt,
             ),
         );
         // 行そのものはcleanupが消すまで残る。
         self::assertSame(1, $this->countRows('analysis_deliveries'));
+    }
+
+    /**
+     * 同じkey・同じbodyでも、保持期間切れの後に解析された新しい世代の結果を、
+     * 古いrequestが受け取らない。fingerprintは一致するため、世代を
+     * `started_at`で固定しないと区別できない。
+     */
+    public function testDeliveryIsPinnedToTheClaimGeneration(): void
+    {
+        $apiKey = $this->register();
+        $this->analyse($apiKey);
+        $firstGeneration = $this->storedStartedAt();
+        $this->expireStoredAnalyses();
+
+        // 同じkey・同じbodyを、失効後に新しい世代として解析する。
+        $this->analyzer->behaveAs(
+            static fn (AnalysisRequest $request): Analysis => new Analysis(
+                new DateTimeImmutable('2026-08-29T09:00:05Z'),
+                'example/analysis-model',
+                '新しい世代の架空の振り返り',
+            ),
+        );
+        $second = $this->analyse($apiKey);
+        $secondGeneration = $this->storedStartedAt();
+        $repository = new AnalysisRequestRepository(
+            fn (): PDO => $this->connection,
+        );
+
+        self::assertNotEquals($firstGeneration, $secondGeneration);
+        self::assertNull(
+            $repository->findDelivery(
+                $this->installationId(),
+                self::KEY,
+                $firstGeneration,
+            ),
+        );
+        self::assertSame(
+            (string) $second->getBody(),
+            $repository->findDelivery(
+                $this->installationId(),
+                self::KEY,
+                $secondGeneration,
+            ),
+        );
     }
 
     /**
@@ -858,7 +915,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             ->execute([
                 'installation_id' => $this->installationId(),
                 'idempotency_key' => self::KEY,
-                'fingerprint' => self::requestFingerprint(),
+                'fingerprint' => $this->requestFingerprint(),
                 'started_at' => $startedAt->format('Y-m-d H:i:s.u'),
                 'expires_at' => $startedAt
                     ->modify(
@@ -997,11 +1054,16 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
+     * fingerprintはinstallation単位にscopeした鍵付きhashである。秘密値は
+     * `.env.example`の架空値を設定から読む。
+     *
      * parserはassociativeにしない`json_decode()`の結果を受け取る。テストの
      * 配列もJSONを経由してJSON上の型どおりの値へ変換する。
      */
-    private static function requestFingerprint(): string
+    private function requestFingerprint(): string
     {
+        $configuration = require self::projectPath('bootstrap/config.php');
+
         return AnalysisRequestParser::parse(
             json_decode(
                 json_encode(
@@ -1011,7 +1073,10 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
                 false,
                 flags: JSON_THROW_ON_ERROR,
             ),
-        )->fingerprint();
+        )->fingerprint(
+            $this->installationId(),
+            $configuration['analysis']['fingerprintSecret'],
+        );
     }
 
     /**

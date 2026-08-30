@@ -35,6 +35,7 @@ AI provider実装はIssue #4、rate limit / usage / 登録endpointのabuse対策
 
 | 項目 | 契約 |
 | --- | --- |
+| 通信 | 本番はHTTPSのみ。平文HTTPで呼び出さない |
 | Base path | `/v1` |
 | request body | `Content-Type: application/json`（UTF-8） |
 | response body | `application/json; charset=utf-8` |
@@ -43,6 +44,12 @@ AI provider実装はIssue #4、rate limit / usage / 登録endpointのabuse対策
 | 未知のフィールド | Serverは無視する。Android側の項目追加でServerの更新を必要としない |
 
 Serverはtimezoneやrecurrenceを解釈しません。対象期間の計算はAndroid側の責務です。
+
+### 通信
+
+本番のHosted APIはHTTPSでだけ呼び出します。Bearer API keyとJournalEntry本文が平文で流れないようにするためで、平文HTTPでの送信は契約違反として扱います。Androidは平文HTTPへのfallbackやHTTPからのリダイレクト追従を行わないでください。
+
+ローカル開発（`http://127.0.0.1:8081`）だけは例外です。
 
 ### timestampの表記
 
@@ -187,7 +194,8 @@ Android側`AnalysisResult`が必要とする「対象期間」「解析日時」
 ### 契約
 
 - `Idempotency-Key`はinstallationごとのスコープです。大文字小文字を区別するため、`Example_Key_1234`と`example_key_1234`は別のkeyです。
-- Serverは検証後のrequestを正規化してSHA-256を取り、同じkeyのrequestが同一内容かを判定します。timezone表記やキー順序の違いは同一とみなし、entryの内容・件数・順序の違いは別とみなします。
+- Serverは検証後のrequestを正規化し、その鍵付きhash（HMAC-SHA-256）で同じkeyのrequestが同一内容かを判定します。timezone表記やキー順序の違いは同一とみなし、entryの内容・件数・順序の違いは別とみなします。
+- 鍵にはServerだけが持つ秘密値を使い、hashはinstallation単位にscopeします。素のhashだと、mood 1件だけのrequestのように入力空間が狭い場合に、DBを読める側が候補を列挙して突き合わせ、JournalEntryの内容を言い当てられるためです。Androidはこの値を送らず、受け取りません。
 - **network timeout等での再送**は、同じ`Idempotency-Key`と同じbodyで送ります。AIは再度呼ばれません。
 - **ユーザーが意図した再解析**は、新しい`Idempotency-Key`で送ります。AIが再度呼ばれます。
 
@@ -278,12 +286,12 @@ Androidの扱いは`500`の契約どおりで、**間隔を空けて同じ`Idemp
 | テーブル | 内容 | 失効 |
 | --- | --- | --- |
 | `installations` | Server内部のinstallation識別子、API keyのSHA-256、作成日時 | 失効しない（installationが使われている間） |
-| `analysis_requests` | installation識別子、`Idempotency-Key`、requestのSHA-256、開始・完了・失効日時 | 解析完了から30分。完了しなかった場合は開始から30分 |
+| `analysis_requests` | installation識別子、`Idempotency-Key`、requestの鍵付きhash、開始・完了・失効日時 | 解析完了から30分。完了しなかった場合は開始から30分 |
 | `analysis_deliveries` | 解析結果のresponse body | `analysis_requests`の行と一緒に失効・削除 |
 
 - JournalEntry本文をDBへ保存しません。request処理中のメモリ上にだけ存在します。
 - AnalysisResult本文の原本はServerに置きません。再送へ同じ結果を返すためだけに、引き渡しバッファへ保持期間の間だけ残します。
-- `analysis_requests`に入るのは正規化requestのSHA-256だけで、本文は復元できません。
+- `analysis_requests`に入るのは正規化requestの鍵付きhash（HMAC-SHA-256）だけで、本文は復元できません。鍵はDBの外（環境変数）にあるため、DBだけを読める状態では本文の候補を列挙して突き合わせることもできません。鍵はinstallation単位にscopeしているため、installationを跨いで同じ内容のrequestを突き合わせることもできません。
 - 本文・prompt・API keyを通常ログ、例外メッセージ、error responseへ出しません。
 - 名前、メールアドレス、profile、timezone、解析スケジュールのルール、entitlement、広告状態は保持しません。
 - `installations`の削除は`analysis_requests`と`analysis_deliveries`へ`ON DELETE CASCADE`で波及します。使われなくなったinstallationの削除方針は、実運用の状況を見てIssue #5で決めます。

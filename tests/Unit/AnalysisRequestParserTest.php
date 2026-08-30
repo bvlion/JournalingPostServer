@@ -14,6 +14,12 @@ use PHPUnit\Framework\TestCase;
  */
 final class AnalysisRequestParserTest extends TestCase
 {
+    /** 架空のinstallation識別子（UUID v4形式）。 */
+    private const INSTALLATION_ID = '3f1c9c4e-2a55-4c1b-9c2a-0b8f6b7d5e41';
+
+    /** 架空のfingerprint用秘密値。実際の値はリポジトリへ置かない。 */
+    private const SECRET = 'example_fingerprint_secret_not_for_production_use';
+
     public function testAcceptsMoodOnlyNoteOnlyAndCombinedEntries(): void
     {
         $request = self::parse(self::payload([
@@ -81,7 +87,10 @@ final class AnalysisRequestParserTest extends TestCase
             ],
         ]);
 
-        self::assertSame($utc->fingerprint(), $offset->fingerprint());
+        self::assertSame(
+            self::fingerprint($utc),
+            self::fingerprint($offset),
+        );
     }
 
     public function testFingerprintChangesWithContent(): void
@@ -97,8 +106,14 @@ final class AnalysisRequestParserTest extends TestCase
             ['recordedAt' => '2026-08-29T01:30:00Z', 'note' => '別の架空のメモ'],
         ]));
 
-        self::assertNotSame($original->fingerprint(), $edited->fingerprint());
-        self::assertNotSame($original->fingerprint(), $reordered->fingerprint());
+        self::assertNotSame(
+            self::fingerprint($original),
+            self::fingerprint($edited),
+        );
+        self::assertNotSame(
+            self::fingerprint($original),
+            self::fingerprint($reordered),
+        );
     }
 
     /**
@@ -317,6 +332,42 @@ final class AnalysisRequestParserTest extends TestCase
         ]);
 
         self::assertCount(1, $request->entries);
+    }
+
+    /**
+     * fingerprintはinstallation単位にscopeした鍵付きhashである。同じ内容でも
+     * installationや秘密値が違えば別の値になる。
+     */
+    public function testFingerprintIsScopedToTheInstallationAndTheSecret(): void
+    {
+        $request = self::parse(self::payload([
+            ['recordedAt' => '2026-08-29T00:30:00Z', 'mood' => self::mood()],
+        ]));
+        $fingerprint = self::fingerprint($request);
+
+        self::assertMatchesRegularExpression(
+            '/\A[0-9a-f]{64}\z/',
+            $fingerprint,
+        );
+        self::assertNotSame(
+            $fingerprint,
+            $request->fingerprint(
+                '9c1e0f47-3ab6-4d52-8e10-7f2b5a6c93d8',
+                self::SECRET,
+            ),
+        );
+        self::assertNotSame(
+            $fingerprint,
+            $request->fingerprint(
+                self::INSTALLATION_ID,
+                'example_other_fingerprint_secret_not_for_production',
+            ),
+        );
+    }
+
+    private static function fingerprint(AnalysisRequest $request): string
+    {
+        return $request->fingerprint(self::INSTALLATION_ID, self::SECRET);
     }
 
     /**

@@ -64,6 +64,9 @@ final class AnalysisRequestRepository
      *
      * `$now`と`$expiresAt`は新しく取得する行へ記録する値である。既存行が失効
      * しているかどうかは`$now`ではなく判定時点の現在時刻で評価する。
+     *
+     * 戻り値には判定対象になった行の`started_at`（世代）を含める。呼び出し元は
+     * その世代を固定して完了記録・バッファ取得・解放を行う。
      */
     public function claim(
         string $installationId,
@@ -71,7 +74,7 @@ final class AnalysisRequestRepository
         string $fingerprint,
         DateTimeImmutable $now,
         DateTimeImmutable $expiresAt,
-    ): AnalysisClaim {
+    ): AnalysisClaimResult {
         // 既存行が消えていた場合と、読み出した行が既に失効していた場合は
         // どちらとも判定できない。その場合だけ取得をやり直す。
         for ($attempt = 0; $attempt < self::MAX_CLAIM_ATTEMPTS; $attempt++) {
@@ -89,8 +92,9 @@ final class AnalysisRequestRepository
         }
 
         // 取得できたか判定できないまま解析へ進むと重複課金になり得るため、
-        // 再送を促す側へ倒す。
-        return AnalysisClaim::InProgress;
+        // 再送を促す側へ倒す。世代を固定できていないので、この結果で
+        // バッファを読んではならない（呼び出し元は409を返す）。
+        return new AnalysisClaimResult(AnalysisClaim::InProgress, $now);
     }
 
     private function attemptClaim(
@@ -99,7 +103,7 @@ final class AnalysisRequestRepository
         string $fingerprint,
         DateTimeImmutable $now,
         DateTimeImmutable $expiresAt,
-    ): ?AnalysisClaim {
+    ): ?AnalysisClaimResult {
         $connection = ($this->connection)();
 
         try {
@@ -119,7 +123,7 @@ final class AnalysisRequestRepository
                     'expires_at' => self::formatTimestamp($expiresAt),
                 ]);
 
-            return AnalysisClaim::Granted;
+            return new AnalysisClaimResult(AnalysisClaim::Granted, $now);
         } catch (PDOException $exception) {
             if ($exception->getCode() !== self::DUPLICATE_KEY_SQL_STATE) {
                 throw $exception;
@@ -127,7 +131,7 @@ final class AnalysisRequestRepository
         }
 
         $statement = $connection->prepare(
-            'SELECT request_fingerprint, completed_at, expires_at
+            'SELECT request_fingerprint, started_at, completed_at, expires_at
              FROM analysis_requests
              WHERE installation_id = :installation_id
                AND idempotency_key = :idempotency_key',
@@ -162,13 +166,18 @@ final class AnalysisRequestRepository
             return null;
         }
 
+        $claimedAt = new DateTimeImmutable($existing['started_at']);
+
         if (!hash_equals($existing['request_fingerprint'], $fingerprint)) {
-            return AnalysisClaim::KeyReuse;
+            return new AnalysisClaimResult(AnalysisClaim::KeyReuse, $claimedAt);
         }
 
-        return $existing['completed_at'] !== null
-            ? AnalysisClaim::Completed
-            : AnalysisClaim::InProgress;
+        return new AnalysisClaimResult(
+            $existing['completed_at'] !== null
+                ? AnalysisClaim::Completed
+                : AnalysisClaim::InProgress,
+            $claimedAt,
+        );
     }
 
     /**
@@ -300,16 +309,22 @@ final class AnalysisRequestRepository
     }
 
     /**
-     * 失効していない引き渡しバッファの本文を返す。
+     * `$claimedAt`の世代の、失効していない引き渡しバッファの本文を返す。
      *
-     * `claim()`の判定とこの取得は別のクエリであり、その間にも`expires_at`を
-     * 越え得る。失効した本文を返さないよう、取得と同じクエリで期限を確認する。
-     * cleanupがまだ行を消していなくても、失効後の本文は返さない。
+     * `claim()`が`Completed`と判定した後にその世代が失効・削除され、同じkeyの
+     * 新しい世代が完了することがある。世代を`started_at`で固定しないと、古い
+     * requestが新しい世代の結果を受け取る。fingerprintの一致では区別できない
+     * （同じ内容のrequestなら一致するため）。
+     *
+     * 期限はMySQLの`UTC_TIMESTAMP(6)`で判定する。PHP側で現在時刻を確定してから
+     * クエリを投げると、その間に失効した本文を返し得るためである。DBとPHPは
+     * 同じホストのUTCの時計を使う前提である（`ConnectionFactory`が接続の
+     * タイムゾーンをUTCへ固定している）。
      */
     public function findDelivery(
         string $installationId,
         string $idempotencyKey,
-        DateTimeImmutable $now,
+        DateTimeImmutable $claimedAt,
     ): ?string {
         $statement = ($this->connection)()->prepare(
             'SELECT deliveries.response_body
@@ -319,12 +334,13 @@ final class AnalysisRequestRepository
                 AND requests.idempotency_key = deliveries.idempotency_key
              WHERE deliveries.installation_id = :installation_id
                AND deliveries.idempotency_key = :idempotency_key
-               AND requests.expires_at > :now',
+               AND requests.started_at = :started_at
+               AND requests.expires_at > UTC_TIMESTAMP(6)',
         );
         $statement->execute([
             'installation_id' => $installationId,
             'idempotency_key' => $idempotencyKey,
-            'now' => self::formatTimestamp($now),
+            'started_at' => self::formatTimestamp($claimedAt),
         ]);
         $responseBody = $statement->fetchColumn();
 
