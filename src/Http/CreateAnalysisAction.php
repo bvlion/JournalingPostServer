@@ -46,7 +46,7 @@ final class CreateAnalysisAction
     private const RETRY_AFTER_IN_PROGRESS_SECONDS = 15;
 
     /** requestのbody上限。実際にはentry数とnote長の上限が先に効く。 */
-    private const MAX_BODY_BYTES = 1048576;
+    public const MAX_BODY_BYTES = 1048576;
 
     private const IDEMPOTENCY_KEY_PATTERN = '/\A[A-Za-z0-9_-]{16,64}\z/';
 
@@ -236,18 +236,7 @@ final class CreateAnalysisAction
             );
         }
 
-        $body = (string) $request->getBody();
-
-        if (strlen($body) > self::MAX_BODY_BYTES) {
-            throw new ApiException(
-                413,
-                'payload_too_large',
-                sprintf(
-                    'The request body must not exceed %d bytes.',
-                    self::MAX_BODY_BYTES,
-                ),
-            );
-        }
+        $body = self::readBody($request);
 
         try {
             // associativeにしない。JSON objectを`stdClass`のまま扱うことで、
@@ -274,6 +263,66 @@ final class CreateAnalysisAction
         }
 
         return AnalysisRequestParser::parse($payload);
+    }
+
+    /**
+     * request bodyを上限までしか読まずに返す。
+     *
+     * body全体をstringへ読んでから長さを確認すると、上限はworkerのメモリ消費を
+     * 制限できない。`Content-Length`が上限を超えていれば読む前に拒否し、その
+     * ヘッダーが無い場合や実際のbodyと一致しない場合に備えて、streamからも
+     * 上限＋1 byteまでしか読み取らない。1 byte多く読むのは、上限ちょうどの
+     * bodyと上限超過のbodyを区別するためである。
+     */
+    private static function readBody(ServerRequestInterface $request): string
+    {
+        $declaredLength = $request->getHeaderLine('Content-Length');
+
+        if (
+            preg_match('/\A\d+\z/', $declaredLength) === 1
+            && (int) $declaredLength > self::MAX_BODY_BYTES
+        ) {
+            throw self::payloadTooLarge();
+        }
+
+        $stream = $request->getBody();
+
+        if ($stream->isSeekable()) {
+            $stream->rewind();
+        }
+
+        $body = '';
+
+        while (strlen($body) <= self::MAX_BODY_BYTES && !$stream->eof()) {
+            $chunk = $stream->read(
+                self::MAX_BODY_BYTES + 1 - strlen($body),
+            );
+
+            // eof()を正しく報告しないstreamで読み続けないようにする。
+            if ($chunk === '') {
+                break;
+            }
+
+            $body .= $chunk;
+        }
+
+        if (strlen($body) > self::MAX_BODY_BYTES) {
+            throw self::payloadTooLarge();
+        }
+
+        return $body;
+    }
+
+    private static function payloadTooLarge(): ApiException
+    {
+        return new ApiException(
+            413,
+            'payload_too_large',
+            sprintf(
+                'The request body must not exceed %d bytes.',
+                self::MAX_BODY_BYTES,
+            ),
+        );
     }
 
     private static function isJsonRequest(

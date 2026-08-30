@@ -151,7 +151,7 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 - `entries`が`period`の範囲内かをServerは検証しません。対象期間の切り出しはAndroid側の責務です。
 - `entries`の順序は解析上の意味を持ちませんが、idempotency判定には影響します（後述）。
 - `entries`が0件の場合はAI呼び出しを行わず`validation_error`を返します。対象期間に記録が無い場合、Androidは解析requestを送りません。
-- request body全体の上限は1 MiBです。
+- request body全体の上限は1 MiBです。超過分をServerがメモリへ読み込まないよう、`Content-Length`が上限を超えていればbodyを読まずに`413`を返します。`Content-Length`が無い場合や実際のbodyと一致しない場合も、上限までしか読まずに`413`を返します。
 
 **Response 200**
 

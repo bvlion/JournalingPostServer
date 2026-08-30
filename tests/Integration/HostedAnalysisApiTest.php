@@ -13,9 +13,11 @@ use JournalingPostServer\Analysis\AnalysisRequestRepository;
 use JournalingPostServer\Http\ApiException;
 use JournalingPostServer\Http\CreateAnalysisAction;
 use JournalingPostServer\Tests\Integration\Support\DatabaseTestCase;
+use JournalingPostServer\Tests\Integration\Support\CountingStream;
 use JournalingPostServer\Tests\Integration\Support\FakeAnalyzer;
 use PDO;
 use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\StreamInterface;
 use Slim\App;
 use Slim\Psr7\Factory\ServerRequestFactory;
 use Slim\Psr7\Factory\StreamFactory;
@@ -663,6 +665,60 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
+     * `Content-Length`が上限を超えていれば、bodyを1 byteも読まずに413を返す。
+     */
+    public function testOversizedContentLengthIsRejectedBeforeReadingTheBody(): void
+    {
+        $stream = new CountingStream(
+            CreateAnalysisAction::MAX_BODY_BYTES * 8,
+        );
+
+        $response = $this->analyse(
+            $this->register(),
+            bodyStream: $stream,
+            extraHeaders: ['Content-Length' => (string) $stream->getSize()],
+        );
+
+        self::assertSame(413, $response->getStatusCode());
+        self::assertSame(
+            'payload_too_large',
+            self::payload($response)['error']['code'],
+        );
+        self::assertSame(0, $stream->bytesRead());
+        self::assertSame(0, $this->analyzer->callCount);
+    }
+
+    /**
+     * `Content-Length`が実際のbodyと一致しなくても、streamは上限＋1 byteまでしか
+     * 読まない。body全体をstringへ読んでから長さを確認する実装では、上限が
+     * workerのメモリ消費を制限できない。
+     */
+    public function testBodyIsNotReadBeyondTheSizeLimit(): void
+    {
+        $stream = new CountingStream(
+            CreateAnalysisAction::MAX_BODY_BYTES * 8,
+        );
+
+        $response = $this->analyse(
+            $this->register(),
+            bodyStream: $stream,
+            // 実際のbodyより小さい値。ヘッダーの正確性に依存しない。
+            extraHeaders: ['Content-Length' => '10'],
+        );
+
+        self::assertSame(413, $response->getStatusCode());
+        self::assertSame(
+            'payload_too_large',
+            self::payload($response)['error']['code'],
+        );
+        self::assertLessThanOrEqual(
+            CreateAnalysisAction::MAX_BODY_BYTES + 1,
+            $stream->bytesRead(),
+        );
+        self::assertSame(0, $this->analyzer->callCount);
+    }
+
+    /**
      * JournalEntry本文をDBへ保存しない。解析結果本文は引き渡しバッファへ
      * 保持期間の間だけ残り、metadataとは別のテーブルへ分離する。
      */
@@ -853,6 +909,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
     /**
      * @param array<string, mixed>|null $payload
+     * @param array<string, string> $extraHeaders
      */
     private function analyse(
         ?string $apiKey,
@@ -861,8 +918,11 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         ?string $body = null,
         string $contentType = 'application/json',
         bool $useDefaultAnalyzer = false,
+        ?StreamInterface $bodyStream = null,
+        array $extraHeaders = [],
     ): ResponseInterface {
-        $headers = ['Idempotency-Key' => $key, 'Content-Type' => $contentType];
+        $headers = ['Idempotency-Key' => $key, 'Content-Type' => $contentType]
+            + $extraHeaders;
 
         if ($apiKey !== null) {
             $headers['Authorization'] = 'Bearer ' . $apiKey;
@@ -877,6 +937,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
                 JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE,
             ),
             $useDefaultAnalyzer ? null : $this->analyzer,
+            $bodyStream,
         );
     }
 
@@ -889,6 +950,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         array $headers = [],
         ?string $body = null,
         ?FakeAnalyzer $analyzer = null,
+        ?StreamInterface $bodyStream = null,
     ): ResponseInterface {
         /** @var callable(?FakeAnalyzer): App<null> $createApplication */
         $createApplication = require self::projectPath('bootstrap/app.php');
@@ -899,7 +961,9 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             $request = $request->withHeader($name, $value);
         }
 
-        if ($body !== null) {
+        if ($bodyStream !== null) {
+            $request = $request->withBody($bodyStream);
+        } elseif ($body !== null) {
             $request = $request->withBody(
                 (new StreamFactory())->createStream($body),
             );
