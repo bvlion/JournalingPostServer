@@ -59,6 +59,7 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 - 呼び出しはcurlで行い、OpenAI SDKは追加しない（`composer.json`の`ext-curl`）。TLSは必須で、平文HTTPへのリダイレクト追従はしない。
 - `.env`に`OPENAI_API_KEY`（OpenAIのAPI key）と`OPENAI_TIMEOUT_SECONDS`（呼び出しのtimeout秒数、正の整数）を設定する。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合、秘密値を含めずに起動を失敗させる。
 - `OPENAI_API_KEY`の実値はリポジトリ・Issue・PR・デプロイログ・通常ログ・例外メッセージ・error responseへ出さない。
+- `store: false`はServerが後からResponseを取得しないための設定であり、OpenAI側の全データ保持をゼロにする設定ではない。標準のAPI利用ではabuse monitoring logsにprompt / responseが最大30日保持され得る（API input / outputはデフォルトではmodel学習に使われない）。`/v1/responses`はZero Data Retention（ZDR）対象だが、ZDRはOpenAIの承認・設定が必要で、現在の実装はZDR有効を前提にしない。ZDR未設定では対応modelのextended prompt cachingによるprovider側の一時的なapplication stateが存在し得る。詳細は[Hosted解析API契約](hosted-analysis-api.md)の「OpenAI側のデータ保持」。ZDRを有効化するかは配置時に判断する（未設定）。
 
 ### 本番timeout（`OPENAI_TIMEOUT_SECONDS`）の決定（未実施）
 
@@ -106,3 +107,4 @@ cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/pr
 - 本番環境へのデプロイ、およびデプロイ自動化（`deploy.yaml`相当）
 - XServer上のファイル・DB・cron・秘密情報の変更
 - 実`OPENAI_API_KEY`でのOpenAI呼び出しと、XServerでの応答時間・timeout実測（本番`OPENAI_TIMEOUT_SECONDS`は未確定）
+- OpenAIアカウント側のZero Data Retention（ZDR）の申請・有効化

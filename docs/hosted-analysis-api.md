@@ -196,7 +196,9 @@ Hosted解析はOpenAI Responses APIで行います（`JournalingPostServer\Analy
 - endpoint: `POST https://api.openai.com/v1/responses`（curl拡張で呼び出す。OpenAI SDKは追加しない）
 - model: `gpt-5.6-luna` / reasoning effort `none` / `max_output_tokens` 800 / `text.verbosity` `low`
 - `text.format`: strict JSON Schema（`slack_log_emotion_analysis`）。出力は good / bad / score / emotion / summary / advice / tags の7項目
-- `store: false`（OpenAI側へ保存させない）
+- `store: false`。生成Responseを後から`GET /v1/responses/{id}`で取得するための保存を無効にする設定で、現在の値のまま変更していません。OpenAI側のすべてのデータ保持をゼロにする設定ではありません（下記「OpenAI側のデータ保持」）
+
+ServerはHTTP応答のtop-level `status`が`completed`のResponseだけを構造化結果の成功候補にします。`status`が`incomplete`（例: `incomplete_details.reason` = `max_output_tokens`）や`failed`のResponseは、schema-validなoutput_textを含んでいても成功にせず、OpenAI呼び出し済みで結果を確定できない失敗として扱います（claimを解放しない。下記「AIへ送信後、結果を確定できない失敗」）。
 
 ### OpenAIへ送る内容
 
@@ -206,6 +208,17 @@ Hosted解析はOpenAI Responses APIで行います（`JournalingPostServer\Analy
   - noteのみのentryはnoteをそのまま使います。
   - `moodLabel`はAI入力へ含めません（現行のSlackログにも含まれていないため）。
 - 送らないもの: `Idempotency-Key`、`ANALYSIS_FINGERPRINT_SECRET`、installation識別子、API key hash。`OPENAI_API_KEY`は`Authorization`ヘッダーにのみ使い、bodyへは入れません。
+
+### OpenAI側のデータ保持
+
+`store: false`はServerが後からResponseを取得しないための設定にすぎません。OpenAIのData Controls上、標準のAPI利用では次が該当し得ます。実装はこれらを前提にした設計です。
+
+- API input / output はデフォルトではmodel学習に使用されません。
+- 標準のAPI利用ではabuse monitoring logsにprompt / responseが含まれ得て、最大30日保持され得ます。
+- `/v1/responses`はZero Data Retention（ZDR）の対象ですが、ZDRはOpenAIの承認・アカウント設定が必要です。現在のServer実装はZDRが有効であることを前提にしません。
+- ZDR未設定では、対応modelのextended prompt cachingによりOpenAI側に一時的なapplication stateが存在し得ます。
+
+ZDRを有効化する場合はデプロイ運用（`docs/production-environment.md`）で扱います。ZDRの有無でServerのrequest / responseとerror契約は変わりません。
 
 ### secretとprovider error
 

@@ -271,6 +271,13 @@ RULES;
      * output_textを取得し、trimしてJSONとして解釈し、strict schemaの7項目を
      * 取り出す。どこかで取得できなければnullを返し、正常終了扱いにしない。
      *
+     * Responses APIはHTTP 200でもtop-level `status`が`incomplete`（例:
+     * `incomplete_details.reason` = `max_output_tokens`）や`failed`を返す。
+     * OpenAIのStructured Outputs仕様に合わせ、`status` = `completed`のResponse
+     * だけを構造化結果の成功候補にする。`completed`以外はschema-validな
+     * output_textを含んでいても成功にしない（呼び出し済みだが結果を確定できず、
+     * 呼び出し元が`AnalysisResultUnconfirmedException`側へ倒す）。
+     *
      * @return array{
      *     good: list<string>, bad: list<string>, score: int, emotion: string,
      *     summary: string, advice: string, tags: list<string>
@@ -285,6 +292,13 @@ RULES;
                 flags: JSON_THROW_ON_ERROR,
             );
         } catch (JsonException $exception) {
+            return null;
+        }
+
+        if (
+            !is_array($response)
+            || ($response['status'] ?? null) !== 'completed'
+        ) {
             return null;
         }
 

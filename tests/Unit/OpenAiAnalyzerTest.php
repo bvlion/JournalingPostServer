@@ -307,6 +307,38 @@ final class OpenAiAnalyzerTest extends TestCase
     }
 
     /**
+     * HTTP 200でも、top-level `status`が`completed`でないResponseは成功に
+     * しない。`status` = `incomplete`（`incomplete_details.reason` =
+     * `max_output_tokens`）でschema-validなoutput_textが含まれていても、
+     * OpenAI呼び出し済みで結果を確定できないため`AnalysisResultUnconfirmedException`
+     * 側へ倒し、claimを解放しない。
+     */
+    public function testHttpTwoHundredWithIncompleteStatusIsNotTreatedAsSuccess(): void
+    {
+        $schemaValidOutputText = json_encode(
+            self::structuredResult(),
+            JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
+        );
+
+        $this->transport->willReturn(200, self::wrapOutputText(
+            $schemaValidOutputText,
+            status: 'incomplete',
+            incompleteReason: 'max_output_tokens',
+        ));
+
+        try {
+            $this->analyzer()->analyze(self::request());
+            self::fail('incompleteなResponseが正常終了扱いになりました。');
+        } catch (AnalysisResultUnconfirmedException $exception) {
+            self::assertSame(500, $exception->response()->status());
+            self::assertSame(
+                'internal_error',
+                $exception->response()->errorCode(),
+            );
+        }
+    }
+
+    /**
      * requestがOpenAIへ到達していない失敗は確定失敗（503 analysis_unavailable）。
      */
     public function testUnreachableProviderIsAConfirmedFailure(): void
@@ -398,19 +430,31 @@ final class OpenAiAnalyzerTest extends TestCase
         );
     }
 
-    private static function wrapOutputText(string $text): string
-    {
-        return json_encode(
-            [
-                'output' => [
-                    [
-                        'type' => 'message',
-                        'content' => [
-                            ['type' => 'output_text', 'text' => $text],
-                        ],
+    private static function wrapOutputText(
+        string $text,
+        string $status = 'completed',
+        ?string $incompleteReason = null,
+    ): string {
+        $response = [
+            // 正常Response fixtureも status=completed を持つ。statusを見ない
+            // 実装へ戻すと testHttpTwoHundredWithIncompleteStatus... が失敗する。
+            'status' => $status,
+            'output' => [
+                [
+                    'type' => 'message',
+                    'content' => [
+                        ['type' => 'output_text', 'text' => $text],
                     ],
                 ],
             ],
+        ];
+
+        if ($incompleteReason !== null) {
+            $response['incomplete_details'] = ['reason' => $incompleteReason];
+        }
+
+        return json_encode(
+            $response,
             JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
         );
     }

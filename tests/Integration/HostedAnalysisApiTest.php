@@ -1157,6 +1157,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
 
         return json_encode([
+            'status' => 'completed',
             'output' => [[
                 'type' => 'message',
                 'content' => [[
