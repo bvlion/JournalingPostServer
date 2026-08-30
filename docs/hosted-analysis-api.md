@@ -35,7 +35,7 @@ AI provider実装はIssue #4、rate limit / usage / 登録endpointのabuse対策
 
 | 項目 | 契約 |
 | --- | --- |
-| 通信 | 本番はHTTPSのみ。平文HTTPで呼び出さない |
+| 通信 | 本番はHTTPSのみ。平文HTTPで呼び出さない（Serverはリダイレクトせず拒否する） |
 | Base path | `/v1` |
 | request body | `Content-Type: application/json`（UTF-8） |
 | response body | `application/json; charset=utf-8` |
@@ -47,7 +47,7 @@ Serverはtimezoneやrecurrenceを解釈しません。対象期間の計算はAn
 
 ### 通信
 
-本番のHosted APIはHTTPSでだけ呼び出します。Bearer API keyとJournalEntry本文が平文で流れないようにするためで、平文HTTPでの送信は契約違反として扱います。Androidは平文HTTPへのfallbackやHTTPからのリダイレクト追従を行わないでください。
+本番のHosted APIはHTTPSでだけ呼び出します。Bearer API keyとJournalEntry本文が平文で流れないようにするためで、平文HTTPでの送信は契約違反として扱います。Serverは平文HTTPのrequestをHTTPSへリダイレクトせず、Apache側で拒否します（リダイレクトしてもrequest自体は平文で送信済みのため）。Androidは平文HTTPへのfallbackやHTTPからのリダイレクト追従を行わず、最初からHTTPSへ直接接続してください。
 
 ローカル開発（`http://127.0.0.1:8081`）だけは例外です。
 

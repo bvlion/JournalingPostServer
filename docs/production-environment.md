@@ -51,7 +51,7 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 - `.htaccess`とRewriteを利用できる。
 - `Authorization`ヘッダーは追加設定なしではPHPへ到達しない。`public/.htaccess`のRewriteで`HTTP_AUTHORIZATION`へ転送する。これはHosted APIの匿名installation認証（`Authorization: Bearer <API key>`）の前提である。
 - 転送値は`index.php`への内部リダイレクトを経て`REDIRECT_HTTP_AUTHORIZATION`として届くことがある。`public/index.php`が両方を受け取れるようにしている。本番配置後は、`POST /v1/analyses`が`401 unauthorized`にならないことで転送が効いているか確認できる。
-- Hosted APIはHTTPSでのみ提供する。Bearer API keyとJournalEntry本文が平文で流れないようにするためである。XServerの無料独自SSLでドメインにHTTPSを有効化し、`.htaccess`で平文HTTPをHTTPSへリダイレクトする。配置時に、平文HTTPで`POST /v1/analyses`を処理しないことを確認する。
+- Hosted APIはHTTPSでのみ提供する。Bearer API keyとJournalEntry本文が平文で流れないようにするためである。XServerの無料独自SSLでドメインにHTTPSを有効化する。`public/.htaccess`は平文HTTPのrequestをHTTPSへリダイレクトせず、Apache側で拒否する（`%{HTTPS}`が`on`でなければ`403`）。リダイレクトしてもrequestに含むBearer API keyとJournalEntry本文は既に平文で送信済みであり、AndroidもHTTPからのリダイレクト追従を行わず最初からHTTPSへ直接接続する（[Hosted解析API契約](hosted-analysis-api.md)）。配置時に、平文HTTPの`POST /v1/analyses`が処理されず拒否されることを確認する。
 
 ## Cron
 

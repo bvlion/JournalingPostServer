@@ -1,4 +1,12 @@
 RewriteEngine On
+
+# Hosted APIはHTTPSでのみ提供する。平文HTTPのrequestはHTTPSへリダイレクトせず、
+# Apache側で拒否する。リダイレクトしても、そのrequestに含まれるBearer API keyと
+# JournalEntry本文は既に平文で送信済みだからである。Androidは最初からHTTPSへ直接
+# 接続する（docs/hosted-analysis-api.md）。
+RewriteCond %{HTTPS} !=on
+RewriteRule ^ - [F]
+
 RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
 RewriteCond %{REQUEST_FILENAME} !-f

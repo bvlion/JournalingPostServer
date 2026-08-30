@@ -212,7 +212,7 @@ make check-clean
 - MySQL 5.7系
 - Composer 2系。依存関係はリポジトリの`composer.lock`どおりに導入
 - `pdo_mysql` / `mbstring` / `json` / `openssl` / `curl`が利用可能
-- Hosted APIはHTTPSでのみ提供する（Bearer API keyとJournalEntry本文を平文HTTPで送らない）
+- Hosted APIはHTTPSでのみ提供する。平文HTTPのrequestは`.htaccess`でリダイレクトせず拒否する（Bearer API keyとJournalEntry本文を平文HTTPで送らせない）
 - アプリ本体はドキュメントルート外へ配置し、`public_html`には`public/index.php`へのシンボリックリンクと`public/.htaccess`のコピーだけを置く
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
 - XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Cronの用途はこれだけである
