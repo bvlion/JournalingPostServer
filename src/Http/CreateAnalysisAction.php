@@ -6,6 +6,7 @@ namespace JournalingPostServer\Http;
 
 use DateTimeImmutable;
 use DateTimeInterface;
+use DateTimeZone;
 use JsonException;
 use JournalingPostServer\Analysis\AnalysisClaim;
 use JournalingPostServer\Analysis\AnalysisRequest;
@@ -286,8 +287,17 @@ final class CreateAnalysisAction
         return strtolower($mediaType) === 'application/json';
     }
 
+    /**
+     * responseのtimestampはUTC・秒精度である。
+     *
+     * `format()`はtimezoneを変換せず、`RESPONSE_TIMESTAMP_FORMAT`の`Z`は
+     * リテラルである。Analyzer（Issue #4）がUTC以外のtimezoneで`analyzedAt`を
+     * 返しても同じ瞬間を表すUTC timestampになるよう、format前に変換する。
+     */
     private static function formatTimestamp(DateTimeInterface $moment): string
     {
-        return $moment->format(self::RESPONSE_TIMESTAMP_FORMAT);
+        return DateTimeImmutable::createFromInterface($moment)
+            ->setTimezone(new DateTimeZone('UTC'))
+            ->format(self::RESPONSE_TIMESTAMP_FORMAT);
     }
 }

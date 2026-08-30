@@ -21,7 +21,11 @@ final class AnalysisRequestRepository
 {
     private const DUPLICATE_KEY_SQL_STATE = '23000';
 
-    private const MAX_CLAIM_ATTEMPTS = 2;
+    /**
+     * 取得をやり直す理由は「行が消えていた」「行が失効していた」の2つある。
+     * 両方が1回ずつ起きても判定できる回数にする。
+     */
+    private const MAX_CLAIM_ATTEMPTS = 3;
 
     /**
      * @param Closure(): PDO $connection
@@ -65,8 +69,8 @@ final class AnalysisRequestRepository
         DateTimeImmutable $now,
         DateTimeImmutable $expiresAt,
     ): AnalysisClaim {
-        // 既存行の検出と読み出しの間で、別requestのpurgeによりその行が消えると
-        // どちらの判定もできない。その場合だけ取得をやり直す。
+        // 既存行が消えていた場合と、読み出した行が既に失効していた場合は
+        // どちらとも判定できない。その場合だけ取得をやり直す。
         for ($attempt = 0; $attempt < self::MAX_CLAIM_ATTEMPTS; $attempt++) {
             $claim = $this->attemptClaim(
                 $installationId,
@@ -120,7 +124,7 @@ final class AnalysisRequestRepository
         }
 
         $statement = $connection->prepare(
-            'SELECT request_fingerprint, completed_at
+            'SELECT request_fingerprint, completed_at, expires_at
              FROM analysis_requests
              WHERE installation_id = :installation_id
                AND idempotency_key = :idempotency_key',
@@ -136,6 +140,22 @@ final class AnalysisRequestRepository
             return null;
         }
 
+        // `purgeExpired()`とこの読み出しは別の操作であり、その間にこの行が
+        // 失効し得る。失効した完了記録やバッファをここで返さないよう、判定の
+        // 時点でも確認する。この判定は`purgeExpired()`が動いたかに依存しない。
+        if (new DateTimeImmutable($existing['expires_at']) <= $now) {
+            $this->discardExpired(
+                $connection,
+                $installationId,
+                $idempotencyKey,
+                $now,
+            );
+
+            // 失効した行は消えた。呼び出し元がやり直し、新しいrequestとして
+            // 取得する。
+            return null;
+        }
+
         if (!hash_equals($existing['request_fingerprint'], $fingerprint)) {
             return AnalysisClaim::KeyReuse;
         }
@@ -143,6 +163,33 @@ final class AnalysisRequestRepository
         return $existing['completed_at'] !== null
             ? AnalysisClaim::Completed
             : AnalysisClaim::InProgress;
+    }
+
+    /**
+     * 失効した1件の行を削除する。`analysis_deliveries`の本文も
+     * `ON DELETE CASCADE`で一緒に消える。
+     *
+     * 削除条件へ`expires_at`を含め、判定に使った時点で失効していた行だけを
+     * 対象にする。別requestが同じkeyで新しく取得した行を消さないためである。
+     */
+    private function discardExpired(
+        PDO $connection,
+        string $installationId,
+        string $idempotencyKey,
+        DateTimeImmutable $now,
+    ): void {
+        $connection
+            ->prepare(
+                'DELETE FROM analysis_requests
+                 WHERE installation_id = :installation_id
+                   AND idempotency_key = :idempotency_key
+                   AND expires_at <= :now',
+            )
+            ->execute([
+                'installation_id' => $installationId,
+                'idempotency_key' => $idempotencyKey,
+                'now' => self::formatTimestamp($now),
+            ]);
     }
 
     /**

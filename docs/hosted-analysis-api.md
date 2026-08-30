@@ -110,7 +110,7 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 | --- | --- | --- |
 | `Authorization` | 必須 | `Bearer <API key>` |
 | `Content-Type` | 必須 | `application/json` |
-| `Idempotency-Key` | 必須 | 端末が生成する16〜64文字の`[A-Za-z0-9_-]`。UUID v4を想定 |
+| `Idempotency-Key` | 必須 | 端末が生成する16〜64文字の`[A-Za-z0-9_-]`。UUID v4を想定。**大文字小文字を区別します** |
 
 **Request body**
 
@@ -186,7 +186,7 @@ Android側`AnalysisResult`が必要とする「対象期間」「解析日時」
 
 ### 契約
 
-- `Idempotency-Key`はinstallationごとのスコープです。
+- `Idempotency-Key`はinstallationごとのスコープです。大文字小文字を区別するため、`Example_Key_1234`と`example_key_1234`は別のkeyです。
 - Serverは検証後のrequestを正規化してSHA-256を取り、同じkeyのrequestが同一内容かを判定します。timezone表記やキー順序の違いは同一とみなし、entryの内容・件数・順序の違いは別とみなします。
 - **network timeout等での再送**は、同じ`Idempotency-Key`と同じbodyで送ります。AIは再度呼ばれません。
 - **ユーザーが意図した再解析**は、新しい`Idempotency-Key`で送ります。AIが再度呼ばれます。
@@ -200,6 +200,8 @@ Android側`AnalysisResult`が必要とする「対象期間」「解析日時」
 | 完了済み・保持期間内 | 初回と同じbodyを`200`で返す（AIは呼ばない） |
 | 同じkeyで別内容 | `409 idempotency_key_reuse` |
 | 保持期間切れ | 新しいrequestとして扱い、AI解析を実行して`200` |
+
+保持期間切れの判定はcleanupの実行有無に依存しません。上記の判定時にも失効を確認し、失効していれば行と本文を削除してから新しいrequestとして扱います。失効した結果が`200`で返ることはありません。
 
 完了済みの結果を返せるようにするため、Serverは解析結果本文を**引き渡しバッファ**（`analysis_deliveries`）へ保持期間の間だけ保持します。これはidempotency metadata（`analysis_requests`）とは別のテーブルで、原本ではありません。この保持がないと、responseがnetworkで失われた場合に、課金済みの解析結果を返せず再課金になります。
 

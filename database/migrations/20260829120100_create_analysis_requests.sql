@@ -6,7 +6,11 @@
 -- なった期間に失効した行が残り続ける。
 CREATE TABLE analysis_requests (
     installation_id CHAR(36) NOT NULL,
-    idempotency_key VARCHAR(64) NOT NULL,
+    -- API契約の`Idempotency-Key`は`[A-Za-z0-9_-]`で大文字小文字を区別する。
+    -- テーブル既定のutf8mb4_unicode_ciでは大小だけ異なるkeyが同一と判定され、
+    -- 別のkeyへcached responseを返してしまうため、この列だけbinary照合にする。
+    -- analysis_deliveriesの同名列も同じ照合にする（複合FKの前提）。
+    idempotency_key VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
     request_fingerprint CHAR(64) NOT NULL,
     started_at DATETIME(6) NOT NULL,
     completed_at DATETIME(6) NULL DEFAULT NULL,

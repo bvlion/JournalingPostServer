@@ -7,7 +7,9 @@
 -- ON DELETE CASCADEでこの行も消える。
 CREATE TABLE analysis_deliveries (
     installation_id CHAR(36) NOT NULL,
-    idempotency_key VARCHAR(64) NOT NULL,
+    -- analysis_requests.idempotency_keyと同じbinary照合にする。複合FKは
+    -- 参照元と参照先で型・照合が一致している必要がある。
+    idempotency_key VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
     response_body MEDIUMTEXT NOT NULL,
     PRIMARY KEY (installation_id, idempotency_key),
     CONSTRAINT fk_analysis_deliveries_request

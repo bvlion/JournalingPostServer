@@ -6,6 +6,7 @@ namespace JournalingPostServer\Tests\Integration;
 
 use DateTimeImmutable;
 use JournalingPostServer\Analysis\Analysis;
+use JournalingPostServer\Analysis\AnalysisClaim;
 use JournalingPostServer\Analysis\AnalysisRequest;
 use JournalingPostServer\Analysis\AnalysisRequestParser;
 use JournalingPostServer\Analysis\AnalysisRequestRepository;
@@ -358,6 +359,152 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
                 ->fetchColumn(),
         );
         self::assertSame($original, (string) $this->analyse($apiKey)->getBody());
+    }
+
+    /**
+     * `purgeExpired()`が動いていなくても、失効した完了記録とその引き渡し
+     * バッファをclaimの判定が拾わない。境界（`now == expires_at`）を含める。
+     *
+     * repositoryを直接呼び、`purgeExpired()`を経由しない状態を作っている。
+     */
+    public function testExpiryIsRecheckedWhenClaimingWithoutAPurge(): void
+    {
+        $apiKey = $this->register();
+        $this->analyse($apiKey);
+        $expiresAt = new DateTimeImmutable(
+            (string) $this->connection
+                ->query('SELECT expires_at FROM analysis_requests')
+                ->fetchColumn(),
+        );
+
+        // 失効時刻ちょうど。`expires_at <= now`なので失効として扱う。
+        $claim = $this->claimDirectly($expiresAt);
+
+        self::assertSame(AnalysisClaim::Granted, $claim);
+        self::assertSame(0, $this->countRows('analysis_deliveries'));
+    }
+
+    /**
+     * 失効直前は完了済みとして扱い、同じ結果を返せる状態を保つ。
+     */
+    public function testUnexpiredCompletedClaimIsStillReplayable(): void
+    {
+        $apiKey = $this->register();
+        $this->analyse($apiKey);
+        $expiresAt = new DateTimeImmutable(
+            (string) $this->connection
+                ->query('SELECT expires_at FROM analysis_requests')
+                ->fetchColumn(),
+        );
+
+        $claim = $this->claimDirectly($expiresAt->modify('-1 microsecond'));
+
+        self::assertSame(AnalysisClaim::Completed, $claim);
+        self::assertSame(1, $this->countRows('analysis_deliveries'));
+    }
+
+    /**
+     * 完了していない失効済みclaimも、判定時に失効を確認して新しく取得できる。
+     */
+    public function testExpiredUnfinishedClaimIsRecheckedWhenClaiming(): void
+    {
+        $this->register();
+        $this->beginUnfinishedAnalysis('now');
+        $expiresAt = new DateTimeImmutable(
+            (string) $this->connection
+                ->query('SELECT expires_at FROM analysis_requests')
+                ->fetchColumn(),
+        );
+
+        $claim = $this->claimDirectly($expiresAt);
+
+        self::assertSame(AnalysisClaim::Granted, $claim);
+        self::assertSame(
+            1,
+            (int) $this->connection
+                ->query('SELECT COUNT(*) FROM analysis_requests')
+                ->fetchColumn(),
+        );
+        self::assertNull(
+            $this->connection
+                ->query('SELECT completed_at FROM analysis_requests')
+                ->fetchColumn(),
+        );
+    }
+
+    /**
+     * `Idempotency-Key`は大文字小文字を区別する。契約が許可する文字には大小
+     * 両方が含まれるため、DBの照合順序で同一視されてはならない。
+     */
+    public function testIdempotencyKeysDifferingOnlyInCaseAreDistinct(): void
+    {
+        $apiKey = $this->register();
+        $upperCaseKey = strtoupper(self::KEY);
+
+        self::assertNotSame(self::KEY, $upperCaseKey);
+
+        $first = $this->analyse($apiKey);
+        $second = $this->analyse($apiKey, key: $upperCaseKey);
+
+        self::assertSame(200, $first->getStatusCode());
+        self::assertSame(200, $second->getStatusCode());
+        // 同じ結果の使い回しではなく、別の解析として実行する。
+        self::assertSame(2, $this->analyzer->callCount);
+        self::assertSame(
+            [self::KEY, $upperCaseKey],
+            $this->connection
+                ->query(
+                    'SELECT idempotency_key FROM analysis_requests'
+                        . ' ORDER BY started_at',
+                )
+                ->fetchAll(PDO::FETCH_COLUMN),
+        );
+        self::assertSame(2, $this->countRows('analysis_deliveries'));
+    }
+
+    /**
+     * UTC以外のtimezoneで返された`analyzedAt`も、同じ瞬間のUTC timestampとして
+     * 返す。`format()`はtimezoneを変換しないため、変換忘れは9時間ずれた解析
+     * 日時が端末へ保存される形で表面化する。
+     */
+    public function testAnalyzedAtIsConvertedToUtc(): void
+    {
+        $apiKey = $this->register();
+        $this->analyzer->behaveAs(
+            static fn (AnalysisRequest $request): Analysis => new Analysis(
+                new DateTimeImmutable('2026-08-29T18:00:05+09:00'),
+                'example/analysis-model',
+                '架空の振り返り',
+            ),
+        );
+
+        $response = $this->analyse($apiKey);
+
+        self::assertSame(
+            '2026-08-29T09:00:05Z',
+            self::payload($response)['analysis']['analyzedAt'],
+        );
+    }
+
+    /**
+     * `purgeExpired()`を経由せずにclaimだけを実行する。
+     */
+    private function claimDirectly(DateTimeImmutable $now): AnalysisClaim
+    {
+        return (new AnalysisRequestRepository(fn (): PDO => $this->connection))
+            ->claim(
+                $this->installationId(),
+                self::KEY,
+                AnalysisRequestParser::parse(self::requestPayload())
+                    ->fingerprint(),
+                $now,
+                $now->modify(
+                    sprintf(
+                        '+%d seconds',
+                        CreateAnalysisAction::RETENTION_SECONDS,
+                    ),
+                ),
+            );
     }
 
     /**
