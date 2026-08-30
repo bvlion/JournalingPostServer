@@ -506,6 +506,38 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
+     * claimの判定と本文の取得は別のクエリであり、その間にも失効し得る。
+     * cleanupがまだ行を消していなくても、失効後の本文は返さない。境界は
+     * `expires_at`ちょうど（失効扱い）である。
+     */
+    public function testExpiredDeliveryIsNotReturned(): void
+    {
+        $apiKey = $this->register();
+        $this->analyse($apiKey);
+        $repository = new AnalysisRequestRepository(
+            fn (): PDO => $this->connection,
+        );
+        $expiresAt = $this->storedExpiry();
+
+        self::assertIsString(
+            $repository->findDelivery(
+                $this->installationId(),
+                self::KEY,
+                $expiresAt->modify('-1 microsecond'),
+            ),
+        );
+        self::assertNull(
+            $repository->findDelivery(
+                $this->installationId(),
+                self::KEY,
+                $expiresAt,
+            ),
+        );
+        // 行そのものはcleanupが消すまで残る。
+        self::assertSame(1, $this->countRows('analysis_deliveries'));
+    }
+
+    /**
      * AI providerを差し替えるまでは、解析直前で503を返す（既定のAnalyzer）。
      */
     public function testAnalysisProviderIsNotConfiguredYet(): void

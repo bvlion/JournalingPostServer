@@ -186,14 +186,17 @@ final class CreateAnalysisAction
         string $installationId,
         string $idempotencyKey,
     ): string {
+        // 期限は取得時点の現在時刻で確認する。claimの判定とこの取得の間にも
+        // 失効し得るため、判定時の時刻を持ち回らない。
         $responseBody = $this->analysisRequests->findDelivery(
             $installationId,
             $idempotencyKey,
+            new DateTimeImmutable('now'),
         );
 
         if ($responseBody === null) {
-            // 完了記録は残っているのに結果が無い状態。保持期間の削除は
-            // 両方まとめて行うため通常は起こらないが、起きた場合は結果を
+            // 完了記録は残っているのに、返せる結果が無い状態。取得の直前に
+            // 失効した場合と、バッファだけが失われた場合がある。どちらも結果を
             // 作り直せないことをAndroidへ伝える。
             throw new ApiException(
                 409,

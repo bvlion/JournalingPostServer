@@ -299,19 +299,32 @@ final class AnalysisRequestRepository
             ]);
     }
 
+    /**
+     * 失効していない引き渡しバッファの本文を返す。
+     *
+     * `claim()`の判定とこの取得は別のクエリであり、その間にも`expires_at`を
+     * 越え得る。失効した本文を返さないよう、取得と同じクエリで期限を確認する。
+     * cleanupがまだ行を消していなくても、失効後の本文は返さない。
+     */
     public function findDelivery(
         string $installationId,
         string $idempotencyKey,
+        DateTimeImmutable $now,
     ): ?string {
         $statement = ($this->connection)()->prepare(
-            'SELECT response_body
-             FROM analysis_deliveries
-             WHERE installation_id = :installation_id
-               AND idempotency_key = :idempotency_key',
+            'SELECT deliveries.response_body
+             FROM analysis_deliveries AS deliveries
+             INNER JOIN analysis_requests AS requests
+                 ON requests.installation_id = deliveries.installation_id
+                AND requests.idempotency_key = deliveries.idempotency_key
+             WHERE deliveries.installation_id = :installation_id
+               AND deliveries.idempotency_key = :idempotency_key
+               AND requests.expires_at > :now',
         );
         $statement->execute([
             'installation_id' => $installationId,
             'idempotency_key' => $idempotencyKey,
+            'now' => self::formatTimestamp($now),
         ]);
         $responseBody = $statement->fetchColumn();
 
