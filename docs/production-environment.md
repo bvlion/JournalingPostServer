@@ -24,13 +24,13 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 | `mbstring` | UTF-8文字列処理 |
 | `json` | JSON入出力 |
 | `openssl` | TLS通信 |
-| `curl` | 外部API呼び出し（FCM・AI providerはIssue #3 / #4） |
+| `curl` | 外部API呼び出し（AI providerはIssue #4） |
 
 ## MySQL
 
 - 本番データベースはMySQL 5.7系である。
 - ローカル開発でも`mysql:5.7`を使用し、本番とバージョンを揃える。
-- Serverは絶対時刻（Androidが計算した`triggerAt`）だけを扱うため、セッションタイムゾーンはUTC固定とする。MySQLのタイムゾーンテーブルが導入されている保証がないため、名前ではなく`+00:00`形式のオフセットで設定する（`JournalingPostServer\Database\ConnectionFactory`）。
+- Serverはtimezoneやrecurrenceを解釈せず絶対時刻だけを扱うため、セッションタイムゾーンはUTC固定とする。MySQLのタイムゾーンテーブルが導入されている保証がないため、名前ではなく`+00:00`形式のオフセットで設定する（`JournalingPostServer\Database\ConnectionFactory`）。
 
 ## Composer
 
@@ -56,8 +56,8 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 
 - XServer Cronを利用できる。
 - 失効した解析metadataと解析結果の引き渡しバッファの削除に使用する。5分間隔で`/opt/php-8.5.5/bin/php bin/prune-expired-analyses.php`を実行する。解析requestの処理中にも削除するが、requestが来なくなった期間はそれだけでは動かないため、解析結果本文が保持期間を越えて残らないようにするにはCronが必要である。
-- Push予約の到来判定（Issue #3）でも使用する予定であり、そちらは本Issueでは設定しない。
-- 本番Cronは未設定である。配置時に設定する。
+- Cronの用途はこの削除だけである。ServerはPush予約やscheduler機能を持たない。
+- 本番Cronは未設定である。配置時に設定する。設定しない場合、解析結果本文が保持期間を越えてDBへ残る。
 
 ## 運用上の制約
 

@@ -30,7 +30,8 @@ final class ApiKeyTest extends TestCase
     }
 
     /**
-     * FCM tokenや任意UUIDをそのまま認証情報として受け付けない。
+     * 端末が生成したUUIDなど、クライアントが選んだ値をそのまま認証情報として
+     * 受け付けない。
      */
     public function testMalformedKeysAreRejected(): void
     {

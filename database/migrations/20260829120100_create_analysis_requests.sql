@@ -1,7 +1,9 @@
 -- 解析requestのidempotency metadata。JournalEntry本文・AnalysisResult本文は
 -- ここへ保存しない。request_fingerprintは正規化したrequestのSHA-256であり、
 -- 本文を復元できない。
--- expires_atを過ぎた行は次回の解析requestが削除する（保持期間の上限）。
+-- expires_atを過ぎた行は、解析requestの処理中と、XServer Cronから定期実行する
+-- bin/prune-expired-analyses.php の両方で削除する。後者が無いと、requestが来なく
+-- なった期間に失効した行が残り続ける。
 CREATE TABLE analysis_requests (
     installation_id CHAR(36) NOT NULL,
     idempotency_key VARCHAR(64) NOT NULL,

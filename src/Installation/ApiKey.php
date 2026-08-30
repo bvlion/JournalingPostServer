@@ -8,7 +8,8 @@ namespace JournalingPostServer\Installation;
  * Hosted APIの匿名installation向けAPI key。
  *
  * Serverが発行した高エントロピーの乱数であり、クライアントが選んだ値ではない。
- * FCM tokenや任意UUIDを認証情報として扱わないための前提となる。
+ * 端末が生成したUUIDなど、クライアントが値を選べる識別子を認証情報として扱わない
+ * ための前提となる。
  *
  * 値が乱数（256bit）であるため、保存にはSHA-256を使う。bcrypt等のstretchingは
  * 辞書攻撃に耐えるためのものであり、この鍵長では不要なうえ、hashでの一意検索が

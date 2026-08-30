@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 use Dotenv\Dotenv;
 
-// Hosted Serverはユーザーのtimezoneやrecurrenceを解釈しない。Androidが計算した
-// 絶対時刻（triggerAt）だけを扱うため、内部の時刻処理はUTCへ固定する。
-// 表示用のtimezone変換は端末側の責務であり、Serverでは設定可能にしない。
+// Hosted Serverはユーザーのtimezoneやrecurrenceを解釈せず、絶対時刻だけを扱う。
+// そのため内部の時刻処理はUTCへ固定する。表示用のtimezone変換は端末側の責務で
+// あり、Serverでは設定可能にしない。
 date_default_timezone_set('UTC');
 
 $dotenv = Dotenv::createImmutable(dirname(__DIR__));

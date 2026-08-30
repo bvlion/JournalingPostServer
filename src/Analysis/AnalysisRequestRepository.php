@@ -148,6 +148,13 @@ final class AnalysisRequestRepository
     /**
      * 解析の完了を記録し、responseを引き渡しバッファへ入れる。
      *
+     * `$claimedAt`で取得したclaimを自分が保持している場合だけ記録し、記録できた
+     * かどうかを返す。claimが保持期間切れで削除され、同じIdempotency-Keyで
+     * 新しいclaimが作られていた場合、遅れて終わった古い処理がそれを完了扱いに
+     * したり、新しいrequestの結果を古い結果で上書きしたりしてはならないため、
+     * 完了記録とバッファ書き込みの両方を同じ条件でfenceする。`release()`と
+     * 同じ所有条件である。
+     *
      * 保持期間の起点を解析完了時へ揃えるため、`expires_at`もここで引き直す。
      * 解析に時間がかかっても、結果本文の保持期間は完了時からの一定時間になる。
      *
@@ -158,39 +165,53 @@ final class AnalysisRequestRepository
         string $installationId,
         string $idempotencyKey,
         string $responseBody,
+        DateTimeImmutable $claimedAt,
         DateTimeImmutable $now,
         DateTimeImmutable $expiresAt,
-    ): void {
+    ): bool {
         $connection = ($this->connection)();
         $connection->beginTransaction();
 
         try {
+            $completion = $connection->prepare(
+                'UPDATE analysis_requests
+                 SET completed_at = :completed_at, expires_at = :expires_at
+                 WHERE installation_id = :installation_id
+                   AND idempotency_key = :idempotency_key
+                   AND started_at = :started_at
+                   AND completed_at IS NULL',
+            );
+            $completion->execute([
+                'installation_id' => $installationId,
+                'idempotency_key' => $idempotencyKey,
+                'started_at' => self::formatTimestamp($claimedAt),
+                'completed_at' => self::formatTimestamp($now),
+                'expires_at' => self::formatTimestamp($expiresAt),
+            ]);
+
+            if ($completion->rowCount() === 0) {
+                // claimを保持していない。書き込みを一切行わずに戻す。
+                $connection->rollBack();
+
+                return false;
+            }
+
+            // 完了記録がある行にしかバッファは存在しないため、上のUPDATEが
+            // 通った時点でこのINSERTが既存行と衝突することはない。
             $connection
                 ->prepare(
                     'INSERT INTO analysis_deliveries
                         (installation_id, idempotency_key, response_body)
-                     VALUES (:installation_id, :idempotency_key, :response_body)
-                     ON DUPLICATE KEY UPDATE response_body = VALUES(response_body)',
+                     VALUES (:installation_id, :idempotency_key, :response_body)',
                 )
                 ->execute([
                     'installation_id' => $installationId,
                     'idempotency_key' => $idempotencyKey,
                     'response_body' => $responseBody,
                 ]);
-            $connection
-                ->prepare(
-                    'UPDATE analysis_requests
-                     SET completed_at = :completed_at, expires_at = :expires_at
-                     WHERE installation_id = :installation_id
-                       AND idempotency_key = :idempotency_key',
-                )
-                ->execute([
-                    'installation_id' => $installationId,
-                    'idempotency_key' => $idempotencyKey,
-                    'completed_at' => self::formatTimestamp($now),
-                    'expires_at' => self::formatTimestamp($expiresAt),
-                ]);
             $connection->commit();
+
+            return true;
         } catch (PDOException $exception) {
             $connection->rollBack();
 

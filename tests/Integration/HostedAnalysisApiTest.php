@@ -82,7 +82,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             null,
             'jpk_00000000000000000000000000000000000000000',
             '3f1c9c4e-2a55-4c1b-9c2a-0b8f6b7d5e41',
-            'fcm-token-like-value',
+            'client-chosen-token-value',
             $this->installationId(),
         ];
 
@@ -287,6 +287,80 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
+     * 保持期間切れでclaimが削除された後に同じIdempotency-Keyで作られた新しい
+     * claimを、遅れて終わった古い処理が完了扱いにしたり、その引き渡しバッファ
+     * へ古い結果を書き込んだりしない。
+     */
+    public function testCompletionOnlyAffectsTheClaimItTook(): void
+    {
+        $apiKey = $this->register();
+        // 古いclaimは失効・削除済みで、同じkeyの新しいclaimが進行中とする。
+        $this->beginUnfinishedAnalysis('now');
+        $repository = new AnalysisRequestRepository(
+            fn (): PDO => $this->connection,
+        );
+
+        $recorded = $repository->complete(
+            $this->installationId(),
+            self::KEY,
+            '{"analysis":{"text":"古い処理の架空の結果"}}',
+            new DateTimeImmutable('2020-01-01T00:00:00Z'),
+            new DateTimeImmutable('now'),
+            new DateTimeImmutable('now'),
+        );
+
+        self::assertFalse($recorded);
+        self::assertSame(0, $this->countRows('analysis_deliveries'));
+        self::assertNull(
+            $this->connection
+                ->query('SELECT completed_at FROM analysis_requests')
+                ->fetchColumn(),
+        );
+
+        // 新しいclaimは進行中のままで、古い結果を返さない。
+        $response = $this->analyse($apiKey);
+
+        self::assertSame(409, $response->getStatusCode());
+        self::assertSame(
+            'analysis_in_progress',
+            self::payload($response)['error']['code'],
+        );
+    }
+
+    /**
+     * 完了済みのclaimを二重に完了させない。引き渡しバッファも上書きしない。
+     */
+    public function testCompletedAnalysisIsNotCompletedAgain(): void
+    {
+        $apiKey = $this->register();
+        $original = (string) $this->analyse($apiKey)->getBody();
+        $claim = $this->connection
+            ->query('SELECT started_at, completed_at FROM analysis_requests')
+            ->fetch();
+        $repository = new AnalysisRequestRepository(
+            fn (): PDO => $this->connection,
+        );
+
+        $recorded = $repository->complete(
+            $this->installationId(),
+            self::KEY,
+            '{"analysis":{"text":"上書きされてはいけない架空の結果"}}',
+            new DateTimeImmutable($claim['started_at']),
+            new DateTimeImmutable('now'),
+            new DateTimeImmutable('now'),
+        );
+
+        self::assertFalse($recorded);
+        self::assertSame(
+            $claim['completed_at'],
+            $this->connection
+                ->query('SELECT completed_at FROM analysis_requests')
+                ->fetchColumn(),
+        );
+        self::assertSame($original, (string) $this->analyse($apiKey)->getBody());
+    }
+
+    /**
      * AI providerを差し替えるまでは、解析直前で503を返す（既定のAnalyzer）。
      */
     public function testAnalysisProviderIsNotConfiguredYet(): void
@@ -339,6 +413,54 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         }
 
         self::assertSame(0, $this->analyzer->callCount);
+    }
+
+    /**
+     * JSON rootの型で応答を分ける。objectでないrootは`400 invalid_request`、
+     * objectの中身の違反は`422 validation_error`である。
+     *
+     * `json_decode(..., true)`では`{}`と`[]`がどちらも空配列になるため、
+     * 空配列を送ったクライアントが422を受け取らないことを確認する。
+     */
+    public function testJsonRootTypeDecidesBetweenInvalidRequestAndValidation(): void
+    {
+        $apiKey = $this->register();
+        $expectations = [
+            ['body' => '[]', 'code' => 'invalid_request', 'status' => 400],
+            [
+                'body' => '[{"period":{},"entries":[]}]',
+                'code' => 'invalid_request',
+                'status' => 400,
+            ],
+            ['body' => '"text"', 'code' => 'invalid_request', 'status' => 400],
+            ['body' => '123', 'code' => 'invalid_request', 'status' => 400],
+            ['body' => 'null', 'code' => 'invalid_request', 'status' => 400],
+            // rootがobjectであれば、空でも契約違反として422で返す。
+            ['body' => '{}', 'code' => 'validation_error', 'status' => 422],
+            [
+                'body' => "\n\t {} ",
+                'code' => 'validation_error',
+                'status' => 422,
+            ],
+        ];
+
+        foreach ($expectations as $expectation) {
+            $response = $this->analyse($apiKey, body: $expectation['body']);
+
+            self::assertSame(
+                $expectation['status'],
+                $response->getStatusCode(),
+                $expectation['body'],
+            );
+            self::assertSame(
+                $expectation['code'],
+                self::payload($response)['error']['code'],
+                $expectation['body'],
+            );
+        }
+
+        self::assertSame(0, $this->analyzer->callCount);
+        self::assertSame(0, $this->countRows('analysis_requests'));
     }
 
     /**

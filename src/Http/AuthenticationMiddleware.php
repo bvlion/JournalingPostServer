@@ -15,7 +15,8 @@ use Psr\Http\Server\RequestHandlerInterface;
  * 匿名installation単位の認証。
  *
  * `Authorization: Bearer <API key>`のAPI keyをhashしてinstallationを引き当てる。
- * account / profileは扱わず、FCM tokenや任意UUIDを認証情報として受け付けない。
+ * account / profileは扱わず、端末が生成したUUIDなどクライアントが値を選べる
+ * 識別子を認証情報として受け付けない。
  *
  * 認証に成功したinstallation識別子は`installationId`属性で後段へ渡す。
  */

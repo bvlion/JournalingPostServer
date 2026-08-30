@@ -50,6 +50,9 @@ final class CreateAnalysisAction
 
     private const RESPONSE_TIMESTAMP_FORMAT = 'Y-m-d\TH:i:s\Z';
 
+    /** JSONのrootがobjectか。有効なJSONではこの1文字でroot typeが決まる。 */
+    private const JSON_OBJECT_PATTERN = '/\A\s*\{/';
+
     public function __construct(
         private AnalysisRequestRepository $analysisRequests,
         private Analyzer $analyzer,
@@ -158,10 +161,16 @@ final class CreateAnalysisAction
 
         // 保持期間の起点は解析完了時に揃える。
         $completedAt = new DateTimeImmutable('now');
+        // 取得したclaimが保持期間切れで削除された後だと記録されない（false）。
+        // 同じIdempotency-Keyの新しいclaimを完了扱いにしたり、その結果を上書き
+        // したりしないためである。その場合でもこのbodyは今処理しているrequest
+        // 自身の結果なので、呼び出し元へはそのまま返す。再送に対する引き渡し
+        // バッファが無いだけである。
         $this->analysisRequests->complete(
             $installationId,
             $idempotencyKey,
             $responseBody,
+            $claimedAt,
             $completedAt,
             self::expiry($completedAt),
         );
@@ -249,9 +258,14 @@ final class CreateAnalysisAction
             );
         }
 
-        // 空のJSON object（`{}`）はPHPで空配列になりlistと区別できない。
-        // 契約違反として422で返すため、ここでは通す。
-        if (!is_array($payload) || ($payload !== [] && array_is_list($payload))) {
+        // `json_decode(..., true)`では`{}`と`[]`がどちらも空配列になり、
+        // rootがobjectだったかを復元できない。契約ではobject以外のrootが
+        // `400 invalid_request`、objectの中身の違反が`422 validation_error`で
+        // 区別されるため、root typeはdecode前のJSON表記で判定する。
+        if (
+            !is_array($payload)
+            || preg_match(self::JSON_OBJECT_PATTERN, $body) !== 1
+        ) {
             throw new ApiException(
                 400,
                 'invalid_request',

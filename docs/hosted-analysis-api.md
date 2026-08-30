@@ -8,6 +8,8 @@ AndroidアプリJournalingPost（`bvlion/JournalingPost`）とJournalingPostServ
 
 JournalEntryとAnalysisResultの原本は端末にあります。Serverは解析時に対象期間のJournalEntryを受け取り、AI解析結果を同じHTTP応答で返すだけで、どちらの本文も恒久保存しません。
 
+解析開始の主体は手動・自動ともAndroidです。実行タイミングの判断（timezone・recurrence・自動解析スケジュール）と、解析後の通知はAndroid側で行います。ServerはscheduleもPushも持ちません。
+
 ```text
 Android                         Server
   JournalEntryをローカル保存
@@ -21,9 +23,13 @@ Android                         Server
                            ←    解析結果
   ↓
   AnalysisResultとしてローカル保存
+  ↓
+  必要ならAndroid側でローカル通知
 ```
 
-Push予約（FCM）はIssue #3、AI provider実装はIssue #4、rate limit / usageはIssue #5で扱います。
+自動解析でも同じ流れです。ServerがtriggerAtを持ってFCMでAndroidを起こす構成は採用しません（Issue #3を`not planned`でclose）。Serverが持たないのは、FCM token・`triggerAt`・ScheduledTrigger・Push予約・scheduler・timezone・recurrenceです。
+
+AI provider実装はIssue #4、rate limit / usage / 登録endpointのabuse対策はIssue #5で扱います。
 
 ## 共通事項
 
@@ -60,8 +66,8 @@ Serverは受信時にUTCへ正規化します。responseのtimestampはUTC・秒
 
 - Serverが発行した高エントロピーのAPI key（`jpk_`＋256bitのbase64url、計47文字）を`Authorization: Bearer <API key>`で送ります。
 - ServerはAPI keyのSHA-256だけを保存します。平文は登録応答でしか返しません。
-- FCM tokenや端末が生成したUUIDを、それだけで認証情報として受け付けません。クライアントが値を選べる方式では「このinstallationがHosted APIを利用してよい」ことを確認できないためです。
-- Androidが保持するのはAPI keyだけです。Serverは内部でinstallation識別子を持ちますが、APIへは出しません。Androidから識別子を送る用途が無く、返せば端末側に不要な状態が増えるためです。
+- 端末が生成したUUIDなど、クライアントが値を選べる識別子を、それだけで認証情報として受け付けません。「このinstallationがHosted APIを利用してよい」ことを確認できないためです。
+- Androidが保持するのはAPI keyだけです。Server内部のinstallation識別子はAPIへ出しません。Server側では、API keyを差し替えても解析requestのidempotency metadataとinstallationの対応を保てるように内部識別子が必要ですが、Androidから識別子を送る用途は無く、返せば端末側に不要な状態が増えるためです。
 
 XServer（Apache）では`Authorization`ヘッダーが既定でPHPへ届きません。`public/.htaccess`のRewriteで転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応しています。
 
@@ -205,7 +211,9 @@ Android側`AnalysisResult`が必要とする「対象期間」「解析日時」
 
 その`Idempotency-Key`は保持期間（30分）で失効するまで`409 analysis_in_progress`を返し続け、失効後は新しい解析として受け付けます。
 
-AI provider側のtimeoutを前提にした早期の復帰は、実providerのtimeout特性を確認できるIssue #4で判断します。#2では先回りしてfencingやprovider timeoutを実装しません。
+失効後に同じkeyで新しい解析が始まった後で、古い処理が遅れて終わることがあります。この場合、古い処理は新しい解析の完了記録も引き渡しバッファも書き換えません。完了記録・バッファ書き込み・解放のいずれも、自分が取得したclaim（取得時刻が一致し、まだ完了していない行）だけを対象にします。古い結果が新しいrequestの応答として返ることはありません。
+
+AI provider側のtimeoutを前提にした早期の復帰や、provider呼び出し自体の打ち切りは、実providerのtimeout特性を確認できるIssue #4で判断します。#2ではDB側のclaim所有条件までを契約とし、provider固有の制御を先回りして実装しません。
 
 ### timeout
 
@@ -230,10 +238,11 @@ AI provider側のtimeoutを前提にした早期の復帰は、実providerのtim
 - `code`で分岐します。`message`と`details`は原因調査用の固定文で、ユーザーへ表示する文言ではありません。
 - `details`は`validation_error`のときだけ付き、フィールドパスと違反内容だけを含みます。受け取った値（JournalEntry本文）は含みません。
 - 未知の`code`はHTTP statusの区分で扱ってください。
+- JSONのrootがobjectかどうかで`400`と`422`を分けます。root自体がobjectでなければ`400 invalid_request`、rootはobjectでその中身が契約に反する場合は`422 validation_error`です。空のobject（`{}`）は後者、空の配列（`[]`）は前者です。
 
 | Status | `code` | 意味 | Androidの扱い |
 | --- | --- | --- | --- |
-| 400 | `invalid_request` | JSONが不正、bodyがobjectでない、`Idempotency-Key`が欠落・形式不正 | retryしない |
+| 400 | `invalid_request` | JSONとして解釈できない、JSONのrootがobjectでない（配列・文字列・数値・`null`）、`Idempotency-Key`が欠落・形式不正 | retryしない |
 | 401 | `unauthorized` | API keyが無い・不正・未登録 | 再登録を検討する |
 | 404 | `not_found` | 未定義のpath | retryしない |
 | 405 | `method_not_allowed` | pathに対して不正なHTTP method | retryしない |
@@ -267,6 +276,8 @@ AI provider側のtimeoutを前提にした早期の復帰は、実providerのtim
 - 名前、メールアドレス、profile、timezone、解析スケジュールのルール、entitlement、広告状態は保持しません。
 - `installations`の削除は`analysis_requests`と`analysis_deliveries`へ`ON DELETE CASCADE`で波及します。使われなくなったinstallationの削除方針は、実運用の状況を見てIssue #5で決めます。
 
+`analysis_requests`の完了記録と`analysis_deliveries`への書き込みは、そのclaimを取得した処理だけが行えます（取得時刻の一致と未完了であることが条件）。失効・削除された後に同じkeyで作られた新しいclaimを、古い処理が完了扱いにしたり上書きしたりしません。
+
 ### 保持期間の保証
 
 失効した行は次の2経路で削除します。
@@ -291,7 +302,9 @@ AI呼び出しは`JournalingPostServer\Analysis\Analyzer`の1点に閉じてい�
 ## このIssueで実装していないこと
 
 - AI provider呼び出しとprompt（Issue #4）
-- FCM token登録とPush予約（Issue #3）
+- AI provider固有のtimeoutと呼び出しの打ち切り（Issue #4）
 - rate limit、usage集計、登録endpointのabuse対策（Issue #5）
 - account / profile、timezone、recurrence、entitlement、広告状態
 - JournalEntry / AnalysisResultのクラウド保存
+
+FCM token・`triggerAt`・ScheduledTrigger・Push予約・Server側schedulerは、このIssueで実装していないものではなく、最終仕様として持たないものです（Issue #3を`not planned`でclose）。

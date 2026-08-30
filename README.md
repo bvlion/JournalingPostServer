@@ -2,12 +2,11 @@
 
 JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を担う最小構成のHTTPサーバーです。XServer上で動作させることを前提としています。
 
-日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は次の2つだけです。
+日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は、Androidから受け取ったJournalEntryをAI解析して同じHTTP応答で結果を返すこと（Issue #4）だけです。
 
-1. 解析時刻ごろに対象端末へFCMを送る（Issue #3）
-2. Androidから受け取ったJournalEntryをAI解析して結果を返す（Issue #4）
+解析開始の主体は手動・自動ともAndroidです。実行タイミング（timezone・recurrence・自動解析スケジュール）の判断と解析後の通知はAndroid側で行うため、サーバーはscheduler・Pushサーバーになりません。FCM・`triggerAt`・Push予約は使用しません（Issue #3で採用しないと決定）。
 
-現時点で実装済みなのは、サーバーの土台（Issue #7）と、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）です。AI解析そのものとPush予約はまだ実装していません（[未実装のもの](#未実装のもの)を参照）。Hosted Server全体は親Issue #1 で管理しています。
+現時点で実装済みなのは、サーバーの土台（Issue #7）と、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）です。AI解析そのものはまだ実装していません（[未実装のもの](#未実装のもの)を参照）。Hosted Server全体は親Issue #1 で管理しています。
 
 API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめています。AndroidとServerはこの文書を共有します。
 
@@ -64,7 +63,7 @@ cp .env.example .env
 
 すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`.env.example`の値はすべて実データから生成していない架空値です。
 
-タイムゾーンは環境変数にしていません。Hosted Serverはユーザーのtimezoneやrecurrenceを解釈せず、Androidが計算した絶対時刻（`triggerAt`）だけを扱うため、PHPの既定タイムゾーンとMySQLのセッションタイムゾーンをUTCへ固定しています。表示のためのtimezone変換は端末側の責務です。
+タイムゾーンは環境変数にしていません。Hosted Serverはユーザーのtimezoneやrecurrenceを解釈せず、絶対時刻だけを扱うため、PHPの既定タイムゾーンとMySQLのセッションタイムゾーンをUTCへ固定しています。表示のためのtimezone変換は端末側の責務です。
 
 ## ローカル実行
 
@@ -149,8 +148,6 @@ docker compose run --rm app composer prune
 
 出力は削除件数だけで、本文やinstallation識別子をログへ残しません。
 
-Push予約用のテーブルはIssue #3で追加します。
-
 マイグレーション機構そのものの動作確認は、`tests/Integration/MigrationRunnerTest.php`が一時ディレクトリへその場限りのマイグレーションを生成し、適用・記録・再実行・ファイル名順の適用を検証します。動作確認だけを目的とした永続テーブルは`database/migrations`へ置きません。
 
 本番環境では、環境変数と依存関係を設定した後、XServerのPHP 8.5.5を明示して適用します。
@@ -210,7 +207,7 @@ make check-clean
 - `pdo_mysql` / `mbstring` / `json` / `openssl` / `curl`が利用可能
 - アプリ本体はドキュメントルート外へ配置し、`public_html`には`public/index.php`へのシンボリックリンクと`public/.htaccess`のコピーだけを置く
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
-- XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Push予約での使用はIssue #3
+- XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Cronの用途はこれだけである
 
 **本番デプロイは行っていません。** XServer上のファイル・DB・cron・秘密情報にも触れていません。
 
@@ -218,10 +215,8 @@ make check-clean
 
 次はいずれも未実装で、後続Issueで扱います。
 
-- Push予約API・FCM送信・XServer Cronトリガー（#3）
 - Hosted AI解析、OpenAI等のAI provider連携（#4）
 - rate limit、usage集計、コスト制御、installation登録のabuse対策（#5）
-- Push予約用テーブル（scheduled trigger）
 - `/health`（作るかどうか未決定）
 - account / profile、timezone、recurrence、entitlement、広告
 - 非同期job queue、Cloud Functions / Cloud Run
