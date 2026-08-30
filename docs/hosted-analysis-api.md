@@ -217,6 +217,16 @@ Android側`AnalysisResult`が必要とする「対象期間」「解析日時」
 
 AI provider側のtimeoutを前提にした早期の復帰や、provider呼び出し自体の打ち切りは、実providerのtimeout特性を確認できるIssue #4で判断します。#2ではDB側のclaim所有条件までを契約とし、provider固有の制御を先回りして実装しません。
 
+### AI解析後にServer内部エラーが起きた場合
+
+AI解析が成功した後、応答の組み立てや完了記録でServer内部エラーが起きると`500 internal_error`を返します。このときServerは未完了のclaimを解放しません。AI呼び出しは既に課金済みであり、解放するとそのkeyのretryが即座にAIを再実行して二重に課金するためです。
+
+Androidの扱いは`500`の契約どおりで、**間隔を空けて同じ`Idempotency-Key`で再送**します。新しいkeyへ切り替えないでください。新しいkeyはユーザーが意図した再解析のためのものです。
+
+同じkeyでの再送は、保持期間（30分）の間`409 analysis_in_progress`になる場合があります。処理は動いていませんが、二重課金を避けるためclaimを保持している状態です。失効後の再送は新しい解析として受け付けます。
+
+解放条件の見直しは、実AI providerの失敗特性を確認できるIssue #4で判断します。
+
 ### timeout
 
 - Androidの読み取りtimeoutは120秒を目安にしてください。実際の上限はIssue #4でAI providerの応答時間を実測して決めます。
@@ -255,7 +265,7 @@ AI provider側のtimeoutを前提にした早期の復帰や、provider呼び出
 | 415 | `unsupported_media_type` | `Content-Type`が`application/json`でない | retryしない |
 | 422 | `validation_error` | request契約違反 | retryしない |
 | 429 | `rate_limited` | 利用上限（**Issue #5で実装**） | `Retry-After`後に同じkeyで再送 |
-| 500 | `internal_error` | Server側の想定外エラー | 間隔を空けて同じkeyで再送 |
+| 500 | `internal_error` | Server側の想定外エラー | 間隔を空けて同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある。上記参照） |
 | 503 | `analysis_unavailable` | AI providerが利用できない | `Retry-After`後に同じkeyで再送 |
 | 504 | `analysis_timeout` | AI解析が時間内に終わらない（**Issue #4で実装**） | 同じkeyで再送 |
 
