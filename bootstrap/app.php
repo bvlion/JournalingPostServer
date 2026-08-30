@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 use JournalingPostServer\Analysis\AnalysisRequestRepository;
 use JournalingPostServer\Analysis\Analyzer;
-use JournalingPostServer\Analysis\UnavailableAnalyzer;
+use JournalingPostServer\Analysis\OpenAi\CurlResponsesTransport;
+use JournalingPostServer\Analysis\OpenAi\OpenAiAnalyzer;
 use JournalingPostServer\Database\ConnectionFactory;
 use JournalingPostServer\Http\AuthenticationMiddleware;
 use JournalingPostServer\Http\CreateAnalysisAction;
@@ -26,8 +27,8 @@ $configuration = require __DIR__ . '/config.php';
  * アプリケーションを構築する。
  *
  * DIコンテナは導入せず、依存の組み立てをこの1か所に集める。テストがAI解析だけを
- * 差し替えられるよう、Analyzerのみ引数で受け取る。省略時はIssue #4でAI provider
- * 実装へ差し替えるまでの既定（503を返す`UnavailableAnalyzer`）を使う。
+ * 差し替えられるよう、Analyzerのみ引数で受け取る。省略時は実OpenAI Analyzer
+ * （`OpenAiAnalyzer` + curl transport）を使う。
  *
  * @return callable(?Analyzer): App<null>
  */
@@ -63,7 +64,12 @@ return static function (?Analyzer $analyzer = null) use ($configuration): App {
         '/v1/analyses',
         new CreateAnalysisAction(
             $analysisRequests,
-            $analyzer ?? new UnavailableAnalyzer(),
+            $analyzer ?? new OpenAiAnalyzer(
+                new CurlResponsesTransport(
+                    $configuration['analysis']['openAiTimeoutSeconds'],
+                ),
+                $configuration['analysis']['openAiApiKey'],
+            ),
             $configuration['analysis']['fingerprintSecret'],
         ),
     )->add(new AuthenticationMiddleware($installations));

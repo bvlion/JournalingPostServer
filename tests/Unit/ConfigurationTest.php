@@ -26,6 +26,8 @@ final class ConfigurationTest extends TestCase
                 'analysis' => [
                     'fingerprintSecret' =>
                         'example_fingerprint_secret_not_for_production_use',
+                    'openAiApiKey' => 'sk-example-not-a-real-openai-key',
+                    'openAiTimeoutSeconds' => 120,
                 ],
             ],
             $configuration,
@@ -68,6 +70,39 @@ final class ConfigurationTest extends TestCase
         }
     }
 
+    /**
+     * timeout秒数は正の整数だけを受け付ける。productionの値は実測から決めるが、
+     * 設定ミスは起動時に弾く。値そのものは例外メッセージへ出さない。
+     */
+    public function testNonPositiveIntegerOpenAiTimeoutIsRejected(): void
+    {
+        $original = $_ENV['OPENAI_TIMEOUT_SECONDS'];
+
+        try {
+            foreach (['0', '-5', '12.5', 'soon', ' 30'] as $invalid) {
+                $_ENV['OPENAI_TIMEOUT_SECONDS'] = $invalid;
+                $_SERVER['OPENAI_TIMEOUT_SECONDS'] = $invalid;
+
+                try {
+                    require __DIR__ . '/../../bootstrap/config.php';
+                    self::fail(sprintf('"%s"が拒否されませんでした。', $invalid));
+                } catch (RuntimeException $exception) {
+                    self::assertStringContainsString(
+                        'OPENAI_TIMEOUT_SECONDS',
+                        $exception->getMessage(),
+                    );
+                    self::assertStringNotContainsString(
+                        $invalid,
+                        $exception->getMessage(),
+                    );
+                }
+            }
+        } finally {
+            $_ENV['OPENAI_TIMEOUT_SECONDS'] = $original;
+            $_SERVER['OPENAI_TIMEOUT_SECONDS'] = $original;
+        }
+    }
+
     public function testEachRequiredEnvironmentVariableIsValidated(): void
     {
         $requiredEnvironmentVariables = [
@@ -77,6 +112,8 @@ final class ConfigurationTest extends TestCase
             'DB_USER',
             'DB_PASSWORD',
             'ANALYSIS_FINGERPRINT_SECRET',
+            'OPENAI_API_KEY',
+            'OPENAI_TIMEOUT_SECONDS',
         ];
 
         foreach ($requiredEnvironmentVariables as $environmentVariable) {

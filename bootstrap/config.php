@@ -19,6 +19,8 @@ $requiredEnvironmentVariables = [
     'DB_USER',
     'DB_PASSWORD',
     'ANALYSIS_FINGERPRINT_SECRET',
+    'OPENAI_API_KEY',
+    'OPENAI_TIMEOUT_SECONDS',
 ];
 
 $dotenv->required($requiredEnvironmentVariables)->notEmpty();
@@ -31,6 +33,21 @@ $fingerprintSecret = $_ENV['ANALYSIS_FINGERPRINT_SECRET']
 if (strlen($fingerprintSecret) < 32) {
     throw new \RuntimeException(
         'ANALYSIS_FINGERPRINT_SECRET must be at least 32 characters.',
+    );
+}
+
+$openAiApiKey = $_ENV['OPENAI_API_KEY'] ?? $_SERVER['OPENAI_API_KEY'];
+
+// OpenAI呼び出しのtimeout秒数は設定可能にする。productionで使う値は実
+// provider / XServerでの実測から決定する（`docs/hosted-analysis-api.md`）。
+// 正の整数以外は起動を失敗させる。値そのものは秘密ではないが、扱いを他の
+// 設定値とそろえる。
+$openAiTimeoutSeconds = $_ENV['OPENAI_TIMEOUT_SECONDS']
+    ?? $_SERVER['OPENAI_TIMEOUT_SECONDS'];
+
+if (preg_match('/\A[1-9][0-9]*\z/', (string) $openAiTimeoutSeconds) !== 1) {
+    throw new \RuntimeException(
+        'OPENAI_TIMEOUT_SECONDS must be a positive integer number of seconds.',
     );
 }
 
@@ -47,5 +64,9 @@ return [
         // 跨いで同じ値を使う。値が変わると、保持期間内の再送が別内容と判定
         // されて`409 idempotency_key_reuse`になる。
         'fingerprintSecret' => $fingerprintSecret,
+        // OpenAI Responses APIの認証情報。実値をrepository・response・通常
+        // ログ・例外メッセージへ出さない。
+        'openAiApiKey' => $openAiApiKey,
+        'openAiTimeoutSeconds' => (int) $openAiTimeoutSeconds,
     ],
 ];

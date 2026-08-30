@@ -2,11 +2,11 @@
 
 JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を担う最小構成のHTTPサーバーです。XServer上で動作させることを前提としています。
 
-日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は、Androidから受け取ったJournalEntryをAI解析して同じHTTP応答で結果を返すこと（Issue #4）だけです。
+日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は、Androidから受け取ったJournalEntryをAI解析して同じHTTP応答で結果を返すこと（Issue #4）だけです。AI解析はOpenAI Responses APIで行います。
 
 解析開始の主体は手動・自動ともAndroidです。実行タイミング（timezone・recurrence・自動解析スケジュール）の判断と解析後の通知はAndroid側で行うため、サーバーはscheduler・Pushサーバーになりません。FCM・`triggerAt`・Push予約は使用しません（Issue #3で採用しないと決定）。
 
-現時点で実装済みなのは、サーバーの土台（Issue #7）と、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）です。AI解析そのものはまだ実装していません（[未実装のもの](#未実装のもの)を参照）。Hosted Server全体は親Issue #1 で管理しています。
+実装済みなのは、サーバーの土台（Issue #7）、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）、Hosted AI解析（Issue #4）です。Hosted Server全体は親Issue #1 で管理しています。**本番デプロイと、本番timeout秒数を決めるための実測はまだ行っていません**（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」を参照）。
 
 API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめています。AndroidとServerはこの文書を共有します。
 
@@ -43,7 +43,7 @@ API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめて�
 
 `POST /v1/analyses`は`Authorization: Bearer <API key>`と`Idempotency-Key`を必要とします。request / responseのschema、error契約、retry / idempotency、保持期間は[Hosted解析API契約](docs/hosted-analysis-api.md)を参照してください。
 
-AI provider呼び出しはIssue #4で実装します。それまで`POST /v1/analyses`は認証・検証・idempotencyを通したうえで、AI呼び出しの直前に`503 analysis_unavailable`を返します。
+`POST /v1/analyses`は認証・検証・idempotencyを通したうえでOpenAI Responses APIを呼び、7項目を整形したプレーンテキストを返します。provider利用不能は`503 analysis_unavailable`、送信後に結果を確定できない失敗（timeout等）は`504 analysis_timeout` / `500 internal_error`で、後者はclaimを解放せず二重課金を避けます。
 
 ## 環境設定
 
@@ -61,8 +61,10 @@ cp .env.example .env
 | `DB_USER` | データベースのユーザー名 |
 | `DB_PASSWORD` | データベースのパスワード |
 | `ANALYSIS_FINGERPRINT_SECRET` | 解析requestのfingerprintを鍵付きにするための秘密値（32文字以上） |
+| `OPENAI_API_KEY` | OpenAI Responses APIのAPI key |
+| `OPENAI_TIMEOUT_SECONDS` | OpenAI呼び出しのtimeout秒数（正の整数）。本番値は実provider / XServerでの実測から決める |
 
-すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`ANALYSIS_FINGERPRINT_SECRET`は32文字未満でも同じように失敗します。`.env.example`の値はすべて実データから生成していない架空値です。
+すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`ANALYSIS_FINGERPRINT_SECRET`は32文字未満、`OPENAI_TIMEOUT_SECONDS`は正の整数でない場合も同じように失敗します。`.env.example`の値はすべて実データから生成していない架空値です（`OPENAI_TIMEOUT_SECONDS`の`120`はローカル / CI用のplaceholderで、本番値ではありません）。
 
 `ANALYSIS_FINGERPRINT_SECRET`は、DBを読める状態からJournalEntryの内容を候補照合で言い当てられないようにするためのものです（[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照）。ランダム値を1度だけ生成し、**deployを跨いで同じ値を使います**。値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になります。
 
@@ -179,7 +181,7 @@ docker compose run --rm app composer test                # unit + integration（
 - `tests/Unit`: DBを必要としないテスト（設定読み込み、UTC固定、接続失敗時の情報漏洩防止、ルーティングのエラー応答、解析requestの検証、API keyの形式）
 - `tests/Integration`: MySQLコンテナへ実接続するテスト（接続設定、一時マイグレーションによるマイグレーション機構の検証、Hosted解析APIの契約）
 
-`tests/Integration/HostedAnalysisApiTest.php`は、AI providerを呼ばないテスト用Analyzerを差し込んでAPI境界（認証・検証・idempotency・error契約・保持期間）を検証します。実際のAI provider呼び出しはIssue #4で追加します。
+`tests/Integration/HostedAnalysisApiTest.php`は、`Analyzer` seamでAI providerを差し替えてAPI境界（認証・検証・idempotency・error契約・保持期間）を検証します。実OpenAI Analyzerは`tests/Unit/OpenAiAnalyzerTest.php`（request構築・入力整形・応答解析・失敗時の扱い）とHosted APIの一部testが、実OpenAIへ接続しないfake transportで検証します。
 
 ### 検証環境（`make check`）
 
@@ -212,18 +214,19 @@ make check-clean
 - MySQL 5.7系
 - Composer 2系。依存関係はリポジトリの`composer.lock`どおりに導入
 - `pdo_mysql` / `mbstring` / `json` / `openssl` / `curl`が利用可能
+- サーバーからOpenAI（`api.openai.com`）へのHTTPS outboundが必要（AI解析。curlで呼ぶ）
+- `.env`に`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`を設定する。`OPENAI_TIMEOUT_SECONDS`の本番値は実provider / XServerでの実測から決める（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）
 - Hosted APIはHTTPSでのみ提供する。平文HTTPのrequestは`.htaccess`でリダイレクトせず拒否する（Bearer API keyとJournalEntry本文を平文HTTPで送らせない）
 - アプリ本体はドキュメントルート外へ配置し、`public_html`には`public/index.php`へのシンボリックリンクと`public/.htaccess`のコピーだけを置く
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
 - XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Cronの用途はこれだけである
 
-**本番デプロイは行っていません。** XServer上のファイル・DB・cron・秘密情報にも触れていません。
+**本番デプロイは行っていません。** XServer上のファイル・DB・cron・秘密情報にも触れていません。実`OPENAI_API_KEY`とXServerでのOpenAI応答時間の実測も未実施で、本番`OPENAI_TIMEOUT_SECONDS`は未確定です。
 
 ## 未実装のもの
 
 次はいずれも未実装で、後続Issueで扱います。
 
-- Hosted AI解析、OpenAI等のAI provider連携（#4）
 - rate limit、usage集計、コスト制御、installation登録のabuse対策（#5）
 - `/health`（作るかどうか未決定）
 - account / profile、timezone、recurrence、entitlement、広告

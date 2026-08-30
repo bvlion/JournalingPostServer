@@ -11,11 +11,14 @@ use JournalingPostServer\Analysis\AnalysisClaimResult;
 use JournalingPostServer\Analysis\AnalysisRequest;
 use JournalingPostServer\Analysis\AnalysisRequestParser;
 use JournalingPostServer\Analysis\AnalysisRequestRepository;
+use JournalingPostServer\Analysis\Analyzer;
+use JournalingPostServer\Analysis\OpenAi\OpenAiAnalyzer;
 use JournalingPostServer\Http\ApiException;
 use JournalingPostServer\Http\CreateAnalysisAction;
 use JournalingPostServer\Tests\Integration\Support\DatabaseTestCase;
 use JournalingPostServer\Tests\Integration\Support\CountingStream;
 use JournalingPostServer\Tests\Integration\Support\FakeAnalyzer;
+use JournalingPostServer\Tests\Support\FakeResponsesTransport;
 use PDO;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamInterface;
@@ -597,21 +600,130 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * AI providerを差し替えるまでは、解析直前で503を返す（既定のAnalyzer）。
+     * 実OpenAI Analyzerを通した成功。7項目を整形したプレーンテキストと、
+     * 実際に使用したmodelを返し、再送は同じ結果をAIを呼ばずに返す。
      */
-    public function testAnalysisProviderIsNotConfiguredYet(): void
+    public function testOpenAiAnalyzerSuccessIsStoredAndReplayed(): void
     {
-        $response = $this->analyse(
-            $this->register(),
-            useDefaultAnalyzer: true,
+        $apiKey = $this->register();
+        $transport = new FakeResponsesTransport();
+        $transport->willReturn(200, self::openAiResponsesBody());
+        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+
+        $first = $this->analyse($apiKey, analyzer: $analyzer);
+        $analysis = self::payload($first)['analysis'];
+
+        self::assertSame(200, $first->getStatusCode());
+        self::assertSame('gpt-5.6-luna', $analysis['model']);
+        self::assertStringContainsString('【良かったこと】', $analysis['text']);
+        self::assertStringContainsString('【タグ】', $analysis['text']);
+        self::assertStringNotContainsString(self::NOTE, (string) $first->getBody());
+
+        $second = $this->analyse($apiKey, analyzer: $analyzer);
+
+        self::assertSame(200, $second->getStatusCode());
+        self::assertSame((string) $first->getBody(), (string) $second->getBody());
+        self::assertSame(1, $transport->callCount);
+    }
+
+    /**
+     * timeout等、送信後に結果を確定できない失敗ではclaimを解放しない。同じkeyの
+     * 即時retryはAIを再実行せず、保持期間内は409 analysis_in_progressになる。
+     */
+    public function testUnconfirmedResultKeepsTheClaimAndBlocksImmediateReanalysis(): void
+    {
+        $apiKey = $this->register();
+        $transport = new FakeResponsesTransport();
+        $transport->willTimeOut();
+        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+
+        $timedOut = $this->analyse($apiKey, analyzer: $analyzer);
+
+        self::assertSame(504, $timedOut->getStatusCode());
+        self::assertSame(
+            'analysis_timeout',
+            self::payload($timedOut)['error']['code'],
+        );
+        // claimは残る（解放しない）。
+        self::assertSame(1, $this->countRows('analysis_requests'));
+        self::assertNull(
+            $this->connection
+                ->query('SELECT completed_at FROM analysis_requests')
+                ->fetchColumn(),
         );
 
-        self::assertSame(503, $response->getStatusCode());
+        // 即時retryはAIを再実行しない。
+        $transport->willReturn(200, self::openAiResponsesBody());
+        $retry = $this->analyse($apiKey, analyzer: $analyzer);
+
+        self::assertSame(409, $retry->getStatusCode());
+        self::assertSame(
+            'analysis_in_progress',
+            self::payload($retry)['error']['code'],
+        );
+        self::assertSame(1, $transport->callCount);
+    }
+
+    /**
+     * AIが成功していないと確定できるprovider失敗ではclaimを解放し、同じkeyの
+     * retryをそのまま再実行できる。provider HTTPエラーのraw bodyは応答へ出さない。
+     */
+    public function testConfirmedProviderFailureReleasesTheClaim(): void
+    {
+        $apiKey = $this->register();
+        $transport = new FakeResponsesTransport();
+        $transport->willReturn(
+            503,
+            '{"error":{"message":"upstream detail must not leak"}}',
+        );
+        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+
+        $failed = $this->analyse($apiKey, analyzer: $analyzer);
+
+        self::assertSame(503, $failed->getStatusCode());
         self::assertSame(
             'analysis_unavailable',
+            self::payload($failed)['error']['code'],
+        );
+        self::assertStringNotContainsString(
+            'upstream detail must not leak',
+            (string) $failed->getBody(),
+        );
+        self::assertSame([], $this->connection
+            ->query('SELECT * FROM analysis_requests')
+            ->fetchAll());
+
+        $transport->willReturn(200, self::openAiResponsesBody());
+        $recovered = $this->analyse($apiKey, analyzer: $analyzer);
+
+        self::assertSame(200, $recovered->getStatusCode());
+        self::assertSame(2, $transport->callCount);
+    }
+
+    /**
+     * entries 0件では従来どおりAIへ到達しない（OpenAI Analyzerでも同じ）。
+     */
+    public function testZeroEntriesNeverReachesOpenAi(): void
+    {
+        $transport = new FakeResponsesTransport();
+        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+
+        $response = $this->analyse(
+            $this->register(),
+            payload: ['period' => [
+                'start' => '2026-08-29T00:00:00Z',
+                'end' => '2026-08-29T09:00:00Z',
+            ], 'entries' => []],
+            analyzer: $analyzer,
+        );
+
+        self::assertSame(422, $response->getStatusCode());
+        self::assertSame(
+            'validation_error',
             self::payload($response)['error']['code'],
         );
-        self::assertSame('60', $response->getHeaderLine('Retry-After'));
+        self::assertSame(0, $transport->callCount);
+        self::assertSame(0, $this->countRows('analysis_requests'));
     }
 
     public function testInvalidRequestsAreRejectedBeforeAnalysis(): void
@@ -974,7 +1086,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         ?array $payload = null,
         ?string $body = null,
         string $contentType = 'application/json',
-        bool $useDefaultAnalyzer = false,
+        ?Analyzer $analyzer = null,
         ?StreamInterface $bodyStream = null,
         array $extraHeaders = [],
     ): ResponseInterface {
@@ -993,7 +1105,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
                 $payload ?? self::requestPayload(),
                 JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE,
             ),
-            $useDefaultAnalyzer ? null : $this->analyzer,
+            $analyzer ?? $this->analyzer,
             $bodyStream,
         );
     }
@@ -1006,10 +1118,10 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         string $path,
         array $headers = [],
         ?string $body = null,
-        ?FakeAnalyzer $analyzer = null,
+        ?Analyzer $analyzer = null,
         ?StreamInterface $bodyStream = null,
     ): ResponseInterface {
-        /** @var callable(?FakeAnalyzer): App<null> $createApplication */
+        /** @var callable(?Analyzer): App<null> $createApplication */
         $createApplication = require self::projectPath('bootstrap/app.php');
         $request = (new ServerRequestFactory())
             ->createServerRequest($method, $path);
@@ -1027,6 +1139,32 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         }
 
         return $createApplication($analyzer)->handle($request);
+    }
+
+    /**
+     * OpenAI Responses APIの正常応答（架空の構造化7項目）。
+     */
+    private static function openAiResponsesBody(): string
+    {
+        $structured = json_encode([
+            'good' => ['架空の良かったこと'],
+            'bad' => [],
+            'score' => 62,
+            'emotion' => '中立',
+            'summary' => '架空の要約。',
+            'advice' => '架空の助言。',
+            'tags' => ['架空タグ'],
+        ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+        return json_encode([
+            'output' => [[
+                'type' => 'message',
+                'content' => [[
+                    'type' => 'output_text',
+                    'text' => $structured,
+                ]],
+            ]],
+        ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
     }
 
     /**

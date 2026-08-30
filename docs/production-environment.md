@@ -24,7 +24,7 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 | `mbstring` | UTF-8文字列処理 |
 | `json` | JSON入出力 |
 | `openssl` | TLS通信 |
-| `curl` | 外部API呼び出し（AI providerはIssue #4） |
+| `curl` | 外部API呼び出し（OpenAI Responses API。`OpenAi\CurlResponsesTransport`） |
 
 ## MySQL
 
@@ -53,6 +53,25 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 - 転送値は`index.php`への内部リダイレクトを経て`REDIRECT_HTTP_AUTHORIZATION`として届くことがある。`public/index.php`が両方を受け取れるようにしている。本番配置後は、`POST /v1/analyses`が`401 unauthorized`にならないことで転送が効いているか確認できる。
 - Hosted APIはHTTPSでのみ提供する。Bearer API keyとJournalEntry本文が平文で流れないようにするためである。XServerの無料独自SSLでドメインにHTTPSを有効化する。`public/.htaccess`は平文HTTPのrequestをHTTPSへリダイレクトせず、Apache側で拒否する（`%{HTTPS}`が`on`でなければ`403`）。リダイレクトしてもrequestに含むBearer API keyとJournalEntry本文は既に平文で送信済みであり、AndroidもHTTPからのリダイレクト追従を行わず最初からHTTPSへ直接接続する（[Hosted解析API契約](hosted-analysis-api.md)）。配置時に、平文HTTPの`POST /v1/analyses`が処理されず拒否されることを確認する。
 
+## 外部通信（OpenAI）
+
+- サーバーからOpenAI（`https://api.openai.com/v1/responses`）へのHTTPS outboundが必要である。AI解析はここでだけ外部通信する。
+- 呼び出しはcurlで行い、OpenAI SDKは追加しない（`composer.json`の`ext-curl`）。TLSは必須で、平文HTTPへのリダイレクト追従はしない。
+- `.env`に`OPENAI_API_KEY`（OpenAIのAPI key）と`OPENAI_TIMEOUT_SECONDS`（呼び出しのtimeout秒数、正の整数）を設定する。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合、秘密値を含めずに起動を失敗させる。
+- `OPENAI_API_KEY`の実値はリポジトリ・Issue・PR・デプロイログ・通常ログ・例外メッセージ・error responseへ出さない。
+
+### 本番timeout（`OPENAI_TIMEOUT_SECONDS`）の決定（未実施）
+
+XServer / PHP / OpenAI Responses APIでの所要時間は未確定である。実`OPENAI_API_KEY`とXServerで次を実測し、そこから決める。
+
+- `gpt-5.6-luna` / reasoning `none` / 現行promptでの通常の応答時間（複数回）
+- entry件数を増やしたとき（〜200件）の応答時間
+- XServer（Apache / PHP）のHTTP実行時間・接続維持の制約（`max_execution_time`、FastCGI / proxyのread timeout）
+- OpenAI側のtimeout挙動
+- Android HTTP clientで現実的に設定できるread timeoutとの整合
+
+測定結果と決めた秒数はIssue #4へ記録する。同期HTTPで安定して成立しない場合にだけ非同期化を検討する（先回りして非同期基盤を作らない）。
+
 ## Cron
 
 - XServer Cronを利用できる。
@@ -69,6 +88,8 @@ cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/pr
 ## 秘密情報
 
 - `.env`はドキュメントルート外のアプリ本体ディレクトリへ置き、Web経由で読めない位置に配置する。
+- `OPENAI_API_KEY`はOpenAI Responses APIのAPI keyである。実際の値はリポジトリ・Issue・PR・デプロイログへ記録しない。
+- `OPENAI_TIMEOUT_SECONDS`は秘密値ではないが、本番値は「外部通信（OpenAI）」の実測から決める。
 - `ANALYSIS_FINGERPRINT_SECRET`は解析requestのfingerprintを鍵付きにするための秘密値である。32文字以上のランダム値を1度だけ生成し、本番deployを跨いで同じ値を使う。`/opt/php-8.5.5/bin/php -r 'echo base64_encode(random_bytes(48)), PHP_EOL;'`などで生成する。
 - この値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になる。無停止で入れ替える手順は用意していないため、必要な場合は影響が保持期間内に収まることを前提に行う。
 - 実際の値はリポジトリ、Issue、PR、デプロイログへ記録しない。DBのバックアップと同じ場所へ保管しない（同じ場所にあると、鍵付きにした意味が失われる）。
@@ -84,3 +105,4 @@ cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/pr
 
 - 本番環境へのデプロイ、およびデプロイ自動化（`deploy.yaml`相当）
 - XServer上のファイル・DB・cron・秘密情報の変更
+- 実`OPENAI_API_KEY`でのOpenAI呼び出しと、XServerでの応答時間・timeout実測（本番`OPENAI_TIMEOUT_SECONDS`は未確定）

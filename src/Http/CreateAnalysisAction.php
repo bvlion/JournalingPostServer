@@ -12,6 +12,7 @@ use JournalingPostServer\Analysis\AnalysisClaim;
 use JournalingPostServer\Analysis\AnalysisRequest;
 use JournalingPostServer\Analysis\AnalysisRequestParser;
 use JournalingPostServer\Analysis\AnalysisRequestRepository;
+use JournalingPostServer\Analysis\AnalysisResultUnconfirmedException;
 use JournalingPostServer\Analysis\Analyzer;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -145,8 +146,18 @@ final class CreateAnalysisAction
     ): string {
         try {
             $analysis = $this->analyzer->analyze($analysisRequest);
+        } catch (AnalysisResultUnconfirmedException $exception) {
+            // OpenAIへ送信後、処理・課金済みかServerから確定できない失敗
+            // （timeout・応答受信の途絶・2xxだが生成結果を利用できない）。
+            // claimを解放すると、同じIdempotency-KeyのretryがOpenAIを再実行して
+            // 二重課金し得る。解放せず、失効（保持期間）までこのkeyへ新しい
+            // 呼び出し権を与えない。保持期間内の再送は409 analysis_in_progress
+            // になる。provider固有の状態はidempotency repositoryへ持ち込まない。
+            throw $exception->response();
         } catch (Throwable $exception) {
-            // 解析できなかったIdempotency-Keyを占有したままにしない。
+            // AIが成功していないと確定できる失敗。解析できなかった
+            // Idempotency-Keyを占有したままにせず、同じkeyでそのまま再試行できる
+            // ようにする。provider利用不能は503 analysis_unavailableである。
             $this->analysisRequests->release(
                 $installationId,
                 $idempotencyKey,
