@@ -6,7 +6,9 @@
 
 - JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能だけを担う最小構成のHTTP APIサーバーです。
 - 日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあります。サーバーはそれらを恒久保存しません。
-- サーバーの責務は、Push予約に基づくFCM送信（Issue #3）と、受け取ったJournalEntryのAI解析（Issue #4）だけです。
+- サーバーの責務は、Androidから受け取ったJournalEntryのAI解析（Issue #4）だけです。
+- 解析開始の主体は手動・自動ともAndroidです。サーバーはscheduler・Pushサーバーになりません。実行タイミング（timezone / recurrence / 自動解析スケジュール）の判断と、解析後の通知はAndroid側の責務です。
+- FCMを使用しません。FCM token、`triggerAt`、ScheduledTrigger、Push予約、Server側schedulerを持ちません（Issue #3で採用しないと決定）。
 
 ## 技術方針
 
@@ -22,10 +24,16 @@
 
 ## データの取り扱い
 
-- JournalEntry本文、prompt、AnalysisResult本文をデータベースへ保存しません。
+- JournalEntry本文とpromptをデータベースへ保存しません。例外はありません。
+- AnalysisResult本文をデータベースへ恒久保存しません。サーバーはどの場合も原本になりません。
+- AnalysisResult本文の唯一の例外は、network応答の消失による重複AI課金を防ぐためのretry delivery bufferです。次をすべて満たす場合にだけ許可します。
+  - 期限を持ち、期限切れの本文を返しません。
+  - trafficの有無にかかわらず、期限切れの本文がデータベースへ残り続けない削除の仕組みを備えます。
+  - 本文をidempotency / usageのmetadataと同じ行へ混ぜず、テーブルを分離します。
+  - 保持期間の上限をドキュメントへ明記します。
 - 上記の本文を通常ログ・例外メッセージ・テスト出力へ出しません。
-- サーバーが保持してよいのは、匿名installation識別子、FCM token、Hosted API用の最小認証情報、Push予約の`triggerAt`、重複防止用の短期metadataまでです。
-- 名前・メールアドレス・profile・timezone・解析スケジュールのルール・entitlement・広告状態を保持しません。
+- サーバーが保持してよいのは、Server内部の匿名installation識別子、Hosted API用の最小認証情報（API keyのhash）、重複防止用の短期metadata、および上記のretry delivery bufferまでです。
+- 名前・メールアドレス・profile・timezone・recurrence・解析スケジュールのルール・`triggerAt`・FCM token・entitlement・広告状態を保持しません。
 - 将来必要になりそうなテーブルを先回りして作成しません。テーブルは必要になったIssueで追加します。
 
 ## 判断と実装
@@ -51,7 +59,7 @@
 - 同じDocker Desktop上で他プロジェクトのcontainer・network・volumeが動作しています。他プロジェクトのリソースへ触れません。
 - 起動中の開発用Docker環境（container・network・volume）を、利用者の明示的な許可なしに再作成・削除しません。
 - 開発用の`database` volumeを、利用者の明示的な許可なしに削除しません（`docker compose down --volumes`を無断で実行しません）。
-- 実`.env`、実データベース、FCM・AI providerなど実外部サービスへ、利用者の明示的な許可なしに接続しません。
+- 実`.env`、実データベース、AI providerなど実外部サービスへ、利用者の明示的な許可なしに接続しません。
 - 通常の検証には`make check`を使用します。`make check`は検証専用のCompose projectだけを使い、開発用のcontainer・network・volume・host portには触れません。
 - 上記について判断できない場合は、実行せず作業を止めて確認します。
 

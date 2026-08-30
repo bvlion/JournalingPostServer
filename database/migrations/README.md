@@ -1,6 +1,6 @@
 # SQLマイグレーション
 
-マイグレーションSQLは、このディレクトリへ`YYYYMMDDHHMMSS_description.sql`形式で追加します。現時点では業務テーブルが1つもないため、このディレクトリは空です。
+マイグレーションSQLは、このディレクトリへ`YYYYMMDDHHMMSS_description.sql`形式で追加します。現在のテーブルの一覧は[README](../../README.md#データベースとマイグレーション)を参照してください。
 
 - ファイル名の昇順で未適用のSQLを実行します。
 - 適用済みファイル名は`schema_migrations`テーブルへ記録します。

@@ -2,12 +2,13 @@
 
 JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を担う最小構成のHTTPサーバーです。XServer上で動作させることを前提としています。
 
-日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は次の2つだけです。
+日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は、Androidから受け取ったJournalEntryをAI解析して同じHTTP応答で結果を返すこと（Issue #4）だけです。
 
-1. 解析時刻ごろに対象端末へFCMを送る（Issue #3）
-2. Androidから受け取ったJournalEntryをAI解析して結果を返す（Issue #4）
+解析開始の主体は手動・自動ともAndroidです。実行タイミング（timezone・recurrence・自動解析スケジュール）の判断と解析後の通知はAndroid側で行うため、サーバーはscheduler・Pushサーバーになりません。FCM・`triggerAt`・Push予約は使用しません（Issue #3で採用しないと決定）。
 
-このリポジトリの現時点の内容は、Issue #7「Server実装基盤を用意する」で整えた**サーバーの土台のみ**です。Hosted機能そのものはまだ実装していません（[未実装のもの](#未実装のもの)を参照）。Hosted Server全体は親Issue #1 で管理しています。
+現時点で実装済みなのは、サーバーの土台（Issue #7）と、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）です。AI解析そのものはまだ実装していません（[未実装のもの](#未実装のもの)を参照）。Hosted Server全体は親Issue #1 で管理しています。
+
+API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめています。AndroidとServerはこの文書を共有します。
 
 ## 技術構成
 
@@ -33,6 +34,17 @@ JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を
 
 本番実行環境と配置構成は[本番実行環境](docs/production-environment.md)を参照してください。
 
+## API
+
+| Endpoint | 内容 |
+| --- | --- |
+| `POST /v1/installations` | 匿名installationを登録し、Hosted API用のAPI keyを発行する（Androidが保持するのはこのAPI keyだけ） |
+| `POST /v1/analyses` | 対象期間のJournalEntryを受け取り、AI解析結果を同じ応答で返す |
+
+`POST /v1/analyses`は`Authorization: Bearer <API key>`と`Idempotency-Key`を必要とします。request / responseのschema、error契約、retry / idempotency、保持期間は[Hosted解析API契約](docs/hosted-analysis-api.md)を参照してください。
+
+AI provider呼び出しはIssue #4で実装します。それまで`POST /v1/analyses`は認証・検証・idempotencyを通したうえで、AI呼び出しの直前に`503 analysis_unavailable`を返します。
+
 ## 環境設定
 
 `.env.example`を`.env`としてコピーし、実行環境に合わせて値を設定します。`.env`はGit管理対象外です。
@@ -48,10 +60,17 @@ cp .env.example .env
 | `DB_NAME` | データベース名 |
 | `DB_USER` | データベースのユーザー名 |
 | `DB_PASSWORD` | データベースのパスワード |
+| `ANALYSIS_FINGERPRINT_SECRET` | 解析requestのfingerprintを鍵付きにするための秘密値（32文字以上） |
 
-すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`.env.example`の値はすべて実データから生成していない架空値です。
+すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`ANALYSIS_FINGERPRINT_SECRET`は32文字未満でも同じように失敗します。`.env.example`の値はすべて実データから生成していない架空値です。
 
-タイムゾーンは環境変数にしていません。Hosted Serverはユーザーのtimezoneやrecurrenceを解釈せず、Androidが計算した絶対時刻（`triggerAt`）だけを扱うため、PHPの既定タイムゾーンとMySQLのセッションタイムゾーンをUTCへ固定しています。表示のためのtimezone変換は端末側の責務です。
+`ANALYSIS_FINGERPRINT_SECRET`は、DBを読める状態からJournalEntryの内容を候補照合で言い当てられないようにするためのものです（[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照）。ランダム値を1度だけ生成し、**deployを跨いで同じ値を使います**。値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になります。
+
+```shell
+php -r 'echo base64_encode(random_bytes(48)), PHP_EOL;'
+```
+
+タイムゾーンは環境変数にしていません。Hosted Serverはユーザーのtimezoneやrecurrenceを解釈せず、絶対時刻だけを扱うため、PHPの既定タイムゾーンとMySQLのセッションタイムゾーンをUTCへ固定しています。表示のためのtimezone変換は端末側の責務です。
 
 ## ローカル実行
 
@@ -70,7 +89,13 @@ docker compose run --rm --no-deps app composer install
 docker compose up app
 ```
 
-`http://127.0.0.1:8081/undefined-route`へアクセスすると、JSON形式の404エラーが返ります。現時点でAPIルートは1つも定義していないため、これがHTTPスタックの疎通確認になります。
+疎通確認には匿名installationの登録を使えます。
+
+```shell
+curl -i -X POST http://127.0.0.1:8081/v1/installations
+```
+
+未定義のパスへアクセスすると、同じ形のJSONエラー（`{"error": {"code": "not_found", ...}}`）が返ります。
 
 停止します。
 
@@ -103,7 +128,32 @@ SQLの適用と`schema_migrations`への記録は別のステートメントで�
 - スキーマが適用済みであれば、該当ファイル名を`schema_migrations`へ手動でINSERTする。
 - スキーマが部分的にしか適用されていなければ、その部分を手動で戻してから再実行する。
 
-現在のテーブルは`schema_migrations`（適用済みマイグレーションの記録。`database/schema_migrations.sql`）だけです。`database/migrations`は空で、業務テーブルは1つも作成していません。**将来必要になりそうなテーブルは先回りして作成しません。** 最初の実テーブル（匿名installation・Push予約）はIssue #2 / #3で追加します。
+現在のテーブルは次のとおりです。**将来必要になりそうなテーブルは先回りして作成しません。**
+
+| テーブル | 内容 | 追加したIssue |
+| --- | --- | --- |
+| `schema_migrations` | 適用済みマイグレーションの記録（`database/schema_migrations.sql`） | #7 |
+| `installations` | Server内部のinstallation識別子とAPI keyのSHA-256 | #2 |
+| `analysis_requests` | 解析requestのidempotency metadata（本文は含まず、鍵付きhashだけ） | #2 |
+| `analysis_deliveries` | 再送へ同じ結果を返すための解析結果の引き渡しバッファ | #2 |
+
+JournalEntry本文はDBへ保存しません。解析結果本文もServerの原本にはせず、引き渡しバッファへ保持期間（解析完了から30分）の間だけ残します。詳細は[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照してください。
+
+### 失効データの削除
+
+失効した解析metadataと引き渡しバッファは、解析requestの処理中に削除します。ただしそれだけでは、requestが来なくなった期間に解析結果本文が保持期間を越えて残り続けます。定期実行で削除してください。
+
+```shell
+docker compose run --rm app composer prune
+```
+
+本番では、XServer Cronから5分間隔で実行します。Cronの作業ディレクトリはアプリ本体の配置ディレクトリとは限らないため、移動してから実行します（`<アプリ本体の配置ディレクトリ>`は実際のパスに置き換えます）。
+
+```shell
+cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
+```
+
+出力は削除件数だけで、本文やinstallation識別子をログへ残しません。
 
 マイグレーション機構そのものの動作確認は、`tests/Integration/MigrationRunnerTest.php`が一時ディレクトリへその場限りのマイグレーションを生成し、適用・記録・再実行・ファイル名順の適用を検証します。動作確認だけを目的とした永続テーブルは`database/migrations`へ置きません。
 
@@ -126,8 +176,10 @@ docker compose run --rm app composer test                # unit + integration（
 
 テストは2つのtestsuiteに分かれています。
 
-- `tests/Unit`: DBを必要としないテスト（設定読み込み、UTC固定、接続失敗時の情報漏洩防止、Slimの404応答）
-- `tests/Integration`: MySQLコンテナへ実接続するテスト（接続設定、一時マイグレーションによるマイグレーション機構の検証）
+- `tests/Unit`: DBを必要としないテスト（設定読み込み、UTC固定、接続失敗時の情報漏洩防止、ルーティングのエラー応答、解析requestの検証、API keyの形式）
+- `tests/Integration`: MySQLコンテナへ実接続するテスト（接続設定、一時マイグレーションによるマイグレーション機構の検証、Hosted解析APIの契約）
+
+`tests/Integration/HostedAnalysisApiTest.php`は、AI providerを呼ばないテスト用Analyzerを差し込んでAPI境界（認証・検証・idempotency・error契約・保持期間）を検証します。実際のAI provider呼び出しはIssue #4で追加します。
 
 ### 検証環境（`make check`）
 
@@ -160,23 +212,20 @@ make check-clean
 - MySQL 5.7系
 - Composer 2系。依存関係はリポジトリの`composer.lock`どおりに導入
 - `pdo_mysql` / `mbstring` / `json` / `openssl` / `curl`が利用可能
+- Hosted APIはHTTPSでのみ提供する。平文HTTPのrequestは`.htaccess`でリダイレクトせず拒否する（Bearer API keyとJournalEntry本文を平文HTTPで送らせない）
 - アプリ本体はドキュメントルート外へ配置し、`public_html`には`public/index.php`へのシンボリックリンクと`public/.htaccess`のコピーだけを置く
-- `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送する
-- XServer CronはIssue #3で使用予定
+- `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
+- XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Cronの用途はこれだけである
 
 **本番デプロイは行っていません。** XServer上のファイル・DB・cron・秘密情報にも触れていません。
 
 ## 未実装のもの
 
-Issue #7の範囲はサーバーの土台までです。次はいずれも未実装で、後続Issueで扱います。
+次はいずれも未実装で、後続Issueで扱います。
 
-- Hosted解析APIとAndroid間のデータ契約（#2）
-- 匿名installation認証方式の決定（#2）
-- Push予約API・FCM送信・XServer Cronトリガー（#3）
 - Hosted AI解析、OpenAI等のAI provider連携（#4）
-- rate limit、usage集計、コスト制御（#5）
-- 実データ用テーブル（installation / scheduled trigger など）
-- APIルート全般（現時点でルートは1つも定義していません。`/health`を作るかどうかも未決定です）
+- rate limit、usage集計、コスト制御、installation登録のabuse対策（#5）
+- `/health`（作るかどうか未決定）
 - account / profile、timezone、recurrence、entitlement、広告
 - 非同期job queue、Cloud Functions / Cloud Run
 - 本番デプロイおよびデプロイ自動化
