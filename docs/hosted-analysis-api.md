@@ -224,7 +224,7 @@ ZDRを有効化する場合はデプロイ運用（`docs/production-environment.
 
 - `OPENAI_API_KEY`の実値を、repository・response・通常ログ・例外メッセージへ出しません。
 - OpenAIがHTTPエラーを返した場合、そのresponse bodyを例外文・ログ・error responseへ出さず、固定のerror契約（`503 analysis_unavailable`）へ変換します。4xxはclaimを解放して再実行可能にし、5xxはHTTPエラー応答だけからは生成・課金の有無を確定できないためclaimを解放しません（応答は同じ`503`）。詳細は「AIへ送信後、結果を確定できない失敗」。
-- 設定は`.env`の`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`です。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合は、秘密値を含めずに起動を失敗させます。
+- 設定は`.env`の`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`です。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合は、HTTPアプリの起動を秘密値を含めずに失敗させます。DBだけを使うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）はこれらを検証しないため、`OPENAI_API_KEY`を空にしても失効データ削除Cronは動き続けます。
 
 
 ## Idempotency / retry / timeout

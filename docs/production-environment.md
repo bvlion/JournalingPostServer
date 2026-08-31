@@ -57,7 +57,7 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 
 - サーバーからOpenAI（`https://api.openai.com/v1/responses`）へのHTTPS outboundが必要である。AI解析はここでだけ外部通信する。
 - 呼び出しはcurlで行い、OpenAI SDKは追加しない（`composer.json`の`ext-curl`）。TLSは必須で、平文HTTPへのリダイレクト追従はしない。
-- `.env`に`OPENAI_API_KEY`（OpenAIのAPI key）と`OPENAI_TIMEOUT_SECONDS`（呼び出しのtimeout秒数、正の整数。実測により `45`）を設定する。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合、秘密値を含めずに起動を失敗させる。
+- `.env`に`OPENAI_API_KEY`（OpenAIのAPI key）と`OPENAI_TIMEOUT_SECONDS`（呼び出しのtimeout秒数、正の整数。実測により `45`）を設定する。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合、HTTPアプリ（`bootstrap/config.php`）は秘密値を含めずに起動を失敗させる。DBだけを使うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）はこれらを検証しない（「Cron」参照）。
 - `OPENAI_API_KEY`の実値はリポジトリ・Issue・PR・デプロイログ・通常ログ・例外メッセージ・error responseへ出さない。
 - `store: false`はServerが後からResponseを取得しないための設定であり、OpenAI側の全データ保持をゼロにする設定ではない。標準のAPI利用ではabuse monitoring logsにprompt / responseが最大30日保持され得る（API input / outputはデフォルトではmodel学習に使われない）。`/v1/responses`はZero Data Retention（ZDR）対象だが、ZDRはOpenAIの承認・設定が必要で、現在の実装はZDR有効を前提にしない。ZDR未設定では対応modelのextended prompt cachingによるprovider側の一時的なapplication stateが存在し得る。詳細は[Hosted解析API契約](hosted-analysis-api.md)の「OpenAI側のデータ保持」。ZDRを有効化するかは配置時に判断する（未設定）。
 
@@ -78,6 +78,7 @@ web `max_execution_time`・front proxy の read timeout は read-only では確�
 
 - XServer Cronを利用できる。
 - 失効した解析metadataと解析結果の引き渡しバッファの削除に使用する。解析requestの処理中にも削除するが、requestが来なくなった期間はそれだけでは動かないため、解析結果本文が保持期間を越えて残らないようにするにはCronが必要である。
+- `bin/prune-expired-analyses.php`は`DB_*`だけを必要とする（`bootstrap/database-config.php`）。`OPENAI_API_KEY`の失効対応などで`OPENAI_*` / `ANALYSIS_FINGERPRINT_SECRET`を空にしても、このCronは起動でき、失効した本文の削除保証を維持する。
 - Cronの作業ディレクトリはアプリ本体の配置ディレクトリである保証がない。スクリプトのパスを相対で書かず、配置ディレクトリへ移動してから実行する。5分間隔で次を実行する（`<アプリ本体の配置ディレクトリ>`は「配置構成」で決めた実際のパスに置き換える。実際のパスはリポジトリへ記録しない）。
 
 ```shell

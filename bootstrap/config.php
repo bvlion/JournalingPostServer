@@ -4,26 +4,21 @@ declare(strict_types=1);
 
 use Dotenv\Dotenv;
 
-// Hosted Serverはユーザーのtimezoneやrecurrenceを解釈せず、絶対時刻だけを扱う。
-// そのため内部の時刻処理はUTCへ固定する。表示用のtimezone変換は端末側の責務で
-// あり、Serverでは設定可能にしない。
-date_default_timezone_set('UTC');
+// HTTPアプリの入口用の完全な設定。
+//
+// DB接続設定は database-config.php で読み込み・検証する（CLIと共通）。この
+// ファイルはそれに加えて、HTTPアプリだけが必要とするanalysis / OpenAI設定を
+// 必須検証して analysis キーを足す。DBだけを必要とするCLIはこのファイルを
+// 経由せず database-config.php を直接使う。
 
-$dotenv = Dotenv::createImmutable(dirname(__DIR__));
-$dotenv->safeLoad();
+$configuration = require __DIR__ . '/database-config.php';
 
-$requiredEnvironmentVariables = [
-    'DB_HOST',
-    'DB_PORT',
-    'DB_NAME',
-    'DB_USER',
-    'DB_PASSWORD',
+// analysis / OpenAI設定はHTTPアプリ専用。ここでだけ必須検証する。
+Dotenv::createImmutable(dirname(__DIR__))->required([
     'ANALYSIS_FINGERPRINT_SECRET',
     'OPENAI_API_KEY',
     'OPENAI_TIMEOUT_SECONDS',
-];
-
-$dotenv->required($requiredEnvironmentVariables)->notEmpty();
+])->notEmpty();
 
 $fingerprintSecret = $_ENV['ANALYSIS_FINGERPRINT_SECRET']
     ?? $_SERVER['ANALYSIS_FINGERPRINT_SECRET'];
@@ -51,22 +46,15 @@ if (preg_match('/\A[1-9][0-9]*\z/', (string) $openAiTimeoutSeconds) !== 1) {
     );
 }
 
-return [
-    'database' => [
-        'host' => $_ENV['DB_HOST'] ?? $_SERVER['DB_HOST'],
-        'port' => $_ENV['DB_PORT'] ?? $_SERVER['DB_PORT'],
-        'name' => $_ENV['DB_NAME'] ?? $_SERVER['DB_NAME'],
-        'user' => $_ENV['DB_USER'] ?? $_SERVER['DB_USER'],
-        'password' => $_ENV['DB_PASSWORD'] ?? $_SERVER['DB_PASSWORD'],
-    ],
-    'analysis' => [
-        // 解析requestのfingerprintを鍵付きにするための秘密値。本番deployを
-        // 跨いで同じ値を使う。値が変わると、保持期間内の再送が別内容と判定
-        // されて`409 idempotency_key_reuse`になる。
-        'fingerprintSecret' => $fingerprintSecret,
-        // OpenAI Responses APIの認証情報。実値をrepository・response・通常
-        // ログ・例外メッセージへ出さない。
-        'openAiApiKey' => $openAiApiKey,
-        'openAiTimeoutSeconds' => (int) $openAiTimeoutSeconds,
-    ],
+$configuration['analysis'] = [
+    // 解析requestのfingerprintを鍵付きにするための秘密値。本番deployを跨いで
+    // 同じ値を使う。値が変わると、保持期間内の再送が別内容と判定されて
+    // `409 idempotency_key_reuse`になる。
+    'fingerprintSecret' => $fingerprintSecret,
+    // OpenAI Responses APIの認証情報。実値をrepository・response・通常ログ・
+    // 例外メッセージへ出さない。
+    'openAiApiKey' => $openAiApiKey,
+    'openAiTimeoutSeconds' => (int) $openAiTimeoutSeconds,
 ];
+
+return $configuration;
