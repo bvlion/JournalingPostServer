@@ -749,6 +749,84 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
+     * 絵文字だけ・名称だけのMoodと、noteだけのentryを実OpenAI Analyzerへ通す。
+     * 名称だけのMoodのlabelがOpenAIへ送るログから失われないことを固定する
+     * （Issue #11の完了条件）。
+     */
+    public function testEmojiOnlyLabelOnlyAndNoteOnlyEntriesReachOpenAiWithoutLosingTheLabel(): void
+    {
+        $apiKey = $this->register();
+        $transport = new FakeResponsesTransport();
+        $transport->willReturn(200, self::openAiResponsesBody());
+        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+
+        $response = $this->analyse(
+            $apiKey,
+            payload: [
+                'period' => [
+                    'start' => '2026-08-29T00:00:00Z',
+                    'end' => '2026-08-29T09:00:00Z',
+                ],
+                'entries' => [
+                    [
+                        'recordedAt' => '2026-08-29T01:15:00Z',
+                        'mood' => ['emoji' => '😐', 'label' => ''],
+                    ],
+                    [
+                        'recordedAt' => '2026-08-29T03:20:00Z',
+                        'mood' => ['emoji' => '', 'label' => '架空の名称だけムード'],
+                    ],
+                    ['recordedAt' => '2026-08-29T05:40:00Z', 'note' => '架空のメモ'],
+                ],
+            ],
+            analyzer: $analyzer,
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame(1, $transport->callCount);
+        self::assertNotNull($transport->lastBody);
+        self::assertStringContainsString(
+            '気分は😐とのこと',
+            $transport->lastBody,
+        );
+        self::assertStringContainsString(
+            '気分は架空の名称だけムードとのこと',
+            $transport->lastBody,
+        );
+        self::assertStringContainsString('架空のメモ', $transport->lastBody);
+    }
+
+    /**
+     * Moodもnoteも無い日時だけのentryは`422 validation_error`で拒否し、AIへ
+     * 到達しない（Issue #11）。
+     */
+    public function testDateOnlyEntryIsRejectedAsValidationError(): void
+    {
+        $response = $this->analyse(
+            $this->register(),
+            payload: [
+                'period' => [
+                    'start' => '2026-08-29T00:00:00Z',
+                    'end' => '2026-08-29T09:00:00Z',
+                ],
+                'entries' => [
+                    ['recordedAt' => '2026-08-29T01:15:00Z'],
+                ],
+            ],
+        );
+        $error = self::payload($response)['error'];
+
+        self::assertSame(422, $response->getStatusCode());
+        self::assertSame('validation_error', $error['code']);
+        self::assertContains(
+            'entries[0]: must have a mood or a note.',
+            $error['details'],
+        );
+        self::assertSame(0, $this->analyzer->callCount);
+        self::assertSame(0, $this->countRows('analysis_requests'));
+    }
+
+    /**
      * entries 0件では従来どおりAIへ到達しない（OpenAI Analyzerでも同じ）。
      */
     public function testZeroEntriesNeverReachesOpenAi(): void

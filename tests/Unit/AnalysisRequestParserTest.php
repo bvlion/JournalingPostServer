@@ -40,6 +40,120 @@ final class AnalysisRequestParserTest extends TestCase
         self::assertSame('架空のメモ', $request->entries[2]->note);
     }
 
+    /**
+     * Moodは絵文字だけでも成立する（Android #42）。`label`は空文字・省略でよい。
+     */
+    public function testEmojiOnlyMoodIsAccepted(): void
+    {
+        $request = self::parse(self::payload([
+            ['recordedAt' => '2026-08-29T00:30:00Z', 'mood' => ['emoji' => '😐', 'label' => '']],
+            ['recordedAt' => '2026-08-29T01:30:00Z', 'mood' => ['emoji' => '🙂']],
+        ]));
+
+        self::assertSame('😐', $request->entries[0]->moodEmoji);
+        self::assertNull($request->entries[0]->moodLabel);
+        self::assertSame('🙂', $request->entries[1]->moodEmoji);
+        self::assertNull($request->entries[1]->moodLabel);
+    }
+
+    /**
+     * Moodは名称だけでも成立する。`emoji`は空文字・省略でよく、`label`は
+     * 解析材料として保持される。
+     */
+    public function testLabelOnlyMoodIsAccepted(): void
+    {
+        $request = self::parse(self::payload([
+            ['recordedAt' => '2026-08-29T00:30:00Z', 'mood' => ['emoji' => '', 'label' => 'しずか']],
+            ['recordedAt' => '2026-08-29T01:30:00Z', 'mood' => ['label' => 'すこし上向き']],
+        ]));
+
+        self::assertNull($request->entries[0]->moodEmoji);
+        self::assertSame('しずか', $request->entries[0]->moodLabel);
+        self::assertNull($request->entries[1]->moodEmoji);
+        self::assertSame('すこし上向き', $request->entries[1]->moodLabel);
+    }
+
+    /**
+     * `emoji`と`label`の両方が空白相当のMoodは受け付けない。
+     */
+    public function testMoodWithBothEmojiAndLabelBlankIsRejected(): void
+    {
+        self::assertContains(
+            'entries[0].mood: must have a non-empty emoji or label.',
+            self::violations(self::payload([
+                [
+                    'recordedAt' => '2026-08-29T00:30:00Z',
+                    'mood' => ['emoji' => '', 'label' => '   '],
+                    'note' => '架空のメモ',
+                ],
+            ])),
+        );
+    }
+
+    /**
+     * Moodもnoteも無い日時だけのentryは`422 validation_error`にする（Issue #11）。
+     */
+    public function testEntryWithoutAMoodOrANoteIsRejected(): void
+    {
+        self::assertSame(
+            ['entries[0]: must have a mood or a note.'],
+            self::violations(self::payload([
+                ['recordedAt' => '2026-08-29T00:30:00Z'],
+            ])),
+        );
+    }
+
+    /**
+     * 空白のみのnoteは未指定と同じに扱う。その結果Moodもnoteも無くなるentryは
+     * `validation_error`になる。
+     */
+    public function testWhitespaceOnlyNoteWithoutAMoodIsRejected(): void
+    {
+        self::assertSame(
+            ['entries[0]: must have a mood or a note.'],
+            self::violations(self::payload([
+                ['recordedAt' => '2026-08-29T00:30:00Z', 'note' => "  \n\t "],
+            ])),
+        );
+    }
+
+    /**
+     * Moodの文字数上限は今回の変更でも維持する。
+     */
+    public function testMoodEmojiAndLabelLengthUpperBoundsAreEnforced(): void
+    {
+        $violations = self::violations(self::payload([
+            [
+                'recordedAt' => '2026-08-29T00:30:00Z',
+                'mood' => [
+                    'emoji' => str_repeat(
+                        '🙂',
+                        AnalysisRequestParser::MAX_MOOD_EMOJI_LENGTH + 1,
+                    ),
+                    'label' => str_repeat(
+                        'あ',
+                        AnalysisRequestParser::MAX_MOOD_LABEL_LENGTH + 1,
+                    ),
+                ],
+            ],
+        ]));
+
+        self::assertContains(
+            sprintf(
+                'entries[0].mood.emoji: must not be longer than %d characters.',
+                AnalysisRequestParser::MAX_MOOD_EMOJI_LENGTH,
+            ),
+            $violations,
+        );
+        self::assertContains(
+            sprintf(
+                'entries[0].mood.label: must not be longer than %d characters.',
+                AnalysisRequestParser::MAX_MOOD_LABEL_LENGTH,
+            ),
+            $violations,
+        );
+    }
+
     public function testPeriodIsNormalisedToUtc(): void
     {
         $request = self::parse([
@@ -154,11 +268,12 @@ final class AnalysisRequestParserTest extends TestCase
                 'end' => '2026-08-29T09:00:00Z',
             ],
             'entries' => [
-                ['recordedAt' => '29/08/2026 00:30'],
+                ['recordedAt' => '29/08/2026 00:30', 'note' => '架空のメモ'],
                 [
                     'recordedAt' => '2026-08-29T00:30:00Z',
-                    'mood' => ['emoji' => '😐'],
+                    'mood' => ['emoji' => '', 'label' => '  '],
                 ],
+                ['recordedAt' => '2026-08-29T00:30:00Z'],
                 [
                     'recordedAt' => '2026-08-29T00:30:00Z',
                     'note' => str_repeat(
@@ -173,9 +288,10 @@ final class AnalysisRequestParserTest extends TestCase
             [
                 'period.end: must be later than period.start.',
                 'entries[0].recordedAt: must be an RFC 3339 timestamp.',
-                'entries[1].mood.label: must be a non-empty string.',
+                'entries[1].mood: must have a non-empty emoji or label.',
+                'entries[2]: must have a mood or a note.',
                 sprintf(
-                    'entries[2].note: must not be longer than %d characters.',
+                    'entries[3].note: must not be longer than %d characters.',
                     AnalysisRequestParser::MAX_NOTE_LENGTH,
                 ),
             ],

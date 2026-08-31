@@ -159,18 +159,39 @@ final class AnalysisRequestParser
                 $path . '.recordedAt',
                 $violations,
             );
+            $rawMood = $entry->mood ?? null;
+            $rawNote = $entry->note ?? null;
             [$moodEmoji, $moodLabel] = self::parseMood(
-                $entry->mood ?? null,
+                $rawMood,
                 $path . '.mood',
                 $violations,
             );
             $note = self::parseNote(
-                $entry->note ?? null,
+                $rawNote,
                 $path . '.note',
                 $violations,
             );
 
             if ($recordedAt === null) {
+                continue;
+            }
+
+            // JournalEntryは利用者が記録した意味のある内容を最低1つ持つ。Mood
+            // （絵文字だけ・名称だけ・両方）だけ、noteだけ、その両方は許可し、
+            // Moodもnoteも無い日時だけのentryは受け付けない（Issue #11、Android
+            // #42 / #50）。空白のみのnoteは未指定と同じに扱う。moodやnoteが
+            // 指定されていて中身・型が不正なケースは、そちらの違反で伝わるため
+            // ここでは二重に報告しない。
+            $noteMeaningful = is_string($rawNote)
+                ? trim($rawNote) !== ''
+                : $rawNote !== null;
+
+            if ($rawMood === null && !$noteMeaningful) {
+                $violations[] = sprintf(
+                    '%s: must have a mood or a note.',
+                    $path,
+                );
+
                 continue;
             }
 
@@ -186,9 +207,11 @@ final class AnalysisRequestParser
     }
 
     /**
-     * moodは省略できる（noteだけのentry）。指定する場合は`emoji`と`label`の
-     * 両方が必要で、これはAndroid側でmoodId/moodEmoji/moodLabelが常に揃って
-     * 保存されることに対応する。`moodId`はServerの解析に不要なため受け取らない。
+     * moodはMoodが存在するentryだけが指定する（noteだけのentryはmoodを送らない）。
+     * Moodは絵文字だけ・名称だけ・両方のいずれでも成立する（Android #42）。
+     * `emoji`と`label`はどちらも文字列で、片方が空文字・省略でよいが、両方が
+     * 空白相当のMoodは受け付けない。`moodId`はServerの解析に不要なため受け取らず、
+     * Moodの同一性判定もServerでは行わない。
      *
      * @param list<string> $violations
      * @return array{?string, ?string}
@@ -208,36 +231,47 @@ final class AnalysisRequestParser
             return [null, null];
         }
 
-        $emoji = self::parseRequiredText(
+        $emoji = self::parseOptionalText(
             $mood->emoji ?? null,
             $path . '.emoji',
             self::MAX_MOOD_EMOJI_LENGTH,
             $violations,
         );
-        $label = self::parseRequiredText(
+        $label = self::parseOptionalText(
             $mood->label ?? null,
             $path . '.label',
             self::MAX_MOOD_LABEL_LENGTH,
             $violations,
         );
 
+        if ($emoji === null && $label === null) {
+            $violations[] = sprintf(
+                '%s: must have a non-empty emoji or label.',
+                $path,
+            );
+        }
+
         return [$emoji, $label];
     }
 
     /**
+     * 空文字・空白のみ・未指定はいずれも「値なし」として`null`にする（noteと
+     * 同じ扱い）。値そのものは変更しない。
+     *
      * @param list<string> $violations
      */
-    private static function parseRequiredText(
+    private static function parseOptionalText(
         mixed $value,
         string $path,
         int $maximumLength,
         array &$violations,
     ): ?string {
-        if (!is_string($value) || trim($value) === '') {
-            $violations[] = sprintf(
-                '%s: must be a non-empty string.',
-                $path,
-            );
+        if ($value === null) {
+            return null;
+        }
+
+        if (!is_string($value)) {
+            $violations[] = sprintf('%s: must be a string.', $path);
 
             return null;
         }
@@ -252,7 +286,7 @@ final class AnalysisRequestParser
             return null;
         }
 
-        return $value;
+        return trim($value) === '' ? null : $value;
     }
 
     /**
