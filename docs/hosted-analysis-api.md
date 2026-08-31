@@ -298,10 +298,13 @@ XServer上でPR #10のproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransp
 
 結論: **同期HTTPは成立します。** 非同期化は不要です。
 
-- `OPENAI_TIMEOUT_SECONDS = 45`: 実測最大（約4.3秒）の約10倍。少数サンプルの余裕をとりつつ、プラットフォームのweb実行上限より十分小さくして、Server自身の`504`（claim非解放）が先に発火するようにします。本番監視で45秒に近づく応答が出たら見直します。
+- `OPENAI_TIMEOUT_SECONDS = 45` の採用根拠は次の2点です。web / FastCGI / front proxy の timeout は確認していません。
+  - 実OpenAI成功応答の実測最大が約4.3秒。
+  - 少数サンプルで高パーセンタイル・時間帯変動を測れていないため、十分な余裕をとる。
+  - 本番監視で45秒に近づく応答が出たら見直します。
 - Android read timeout = 90秒（上記）。
 
-本番投入前に、XServerサーバーパネルのPHP設定で **web の `max_execution_time` が60秒以上**（45秒のOpenAI呼び出し＋オーバーヘッドがweb request内で完了できること）を確認します。CLIは無制限ですがAPIはweb SAPIで動きます。OpenAI側のリクエストtimeoutは意図的に発生させていません（`max_output_tokens: 800` / `reasoning: none` で生成は短く、超過時は `status: incomplete` として扱われます）。
+web `max_execution_time`・XServer front proxy の read timeout・Android read timeout は、いずれも未確認または端末側の設定です。本番配置前の前提条件として、**45秒の provider timeout ＋ request 処理の overhead を、これら外側の timeout がすべて上回ること**を確認します。この条件を満たした場合にだけ、遅いケースで Server 側の `504 analysis_timeout`（claim 非解放）が外側の timeout より先に発火し、二重課金を避けられます。CLI PHP は `max_execution_time = 0`（無制限）ですが API は web SAPI で動くため、web 側の値をサーバーパネルの PHP 設定で確認します。OpenAI 側のリクエスト timeout は意図的に発生させていません（`max_output_tokens: 800` / `reasoning: none` で生成は短く、超過時は `status: incomplete` として扱われます）。
 
 ## Error response
 

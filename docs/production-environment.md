@@ -70,9 +70,9 @@ XServer上の検証ディレクトリ（本番配置とは分離）で、PR #10�
 - サンプルは短時間内の少数回。高パーセンタイル・時間帯変動は未測定。
 - 意図的なOpenAI側timeoutは発生させていない。
 
-結論: 同期HTTPは成立する。`OPENAI_TIMEOUT_SECONDS = 45`（実測最大の約10倍、web実行上限より十分小さくServer自身の`504`が先に発火する値）。Android read timeout推奨は 90 秒。
+結論: 同期HTTPは成立する。`OPENAI_TIMEOUT_SECONDS = 45` の採用根拠は (1) 実OpenAI成功応答の実測最大が約4.3秒、(2) 少数サンプルで高パーセンタイル・時間帯変動を測れていないため十分な余裕をとる、の2点。web / FastCGI / front proxy の timeout は根拠に含めていない。Android read timeout推奨は 90 秒。
 
-CLI PHP は `max_execution_time = 0`（無制限）だが、API は web SAPI（FastCGI）で動く。web の `max_execution_time` はサーバーパネルのPHP設定で管理され読めるファイルには無い。配置前にパネルで **60秒以上**（45秒のOpenAI呼び出し＋オーバーヘッドがweb request内で完了できること）を確認する。フロントproxyが単一の遅いweb requestを保持できる上限も、配置後のsmoke testで確認する。
+web `max_execution_time`・front proxy の read timeout は read-only では確認できていない（CLI PHP は `max_execution_time = 0` だが API は web SAPI（FastCGI）で動く。web の値はサーバーパネルのPHP設定で管理され読めるファイルには無い）。本番配置前の前提条件として、**45秒の provider timeout ＋ request 処理の overhead を、web `max_execution_time`・front proxy・Android read timeout がすべて上回ること**を確認する。この条件を満たした場合にだけ、遅いケースで Server 側の `504` が外側の timeout より先に発火し claim を保持できる。配置後の smoke test で、実サイズの `POST /v1/analyses` が web request 内で完了し遅いケースで `504` が返ることも確認する。
 
 ## Cron
 
