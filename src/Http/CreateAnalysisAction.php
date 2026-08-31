@@ -148,7 +148,8 @@ final class CreateAnalysisAction
             $analysis = $this->analyzer->analyze($analysisRequest);
         } catch (AnalysisResultUnconfirmedException $exception) {
             // OpenAIへ送信後、処理・課金済みかServerから確定できない失敗
-            // （timeout・応答受信の途絶・2xxだが生成結果を利用できない）。
+            // （timeout・応答受信の途絶・provider 5xx・2xxだが生成結果を
+            // 利用できない）。
             // claimを解放すると、同じIdempotency-KeyのretryがOpenAIを再実行して
             // 二重課金し得る。解放せず、失効（保持期間）までこのkeyへ新しい
             // 呼び出し権を与えない。保持期間内の再送は409 analysis_in_progress

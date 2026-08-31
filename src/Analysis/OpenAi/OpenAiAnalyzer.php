@@ -148,10 +148,23 @@ RULES;
             );
         }
 
+        if ($result->status >= 500) {
+            // provider 5xx。OpenAIがrequestを受理・処理した後の一時的な5xxか、
+            // 処理前の拒否かを、HTTPエラー応答を受け取ったことだけからは確定
+            // できない。生成・課金が行われた可能性がある側へ倒し、claimを解放
+            // しない（同じkeyの即時retryでAIを再実行しない）。ユーザー向け応答は
+            // 4xxと同じ503 analysis_unavailableのまま。raw bodyは出さない。
+            throw new AnalysisResultUnconfirmedException(
+                self::providerUnavailable(),
+                'OpenAI returned a 5xx response; the request outcome is not '
+                    . 'confirmed.',
+            );
+        }
+
         if ($result->status < 200 || $result->status >= 300) {
-            // OpenAI error responseのraw bodyを例外・ログ・応答へ出さない
-            // （本文は握り潰す）。HTTPエラー
-            // 応答なら生成は行われていないため、確定失敗として扱う。
+            // 4xx（および1xx / 3xx）。処理前の拒否と確定できる確定失敗として
+            // 扱い、claimを解放して同じkeyで再試行できるようにする。OpenAI error
+            // responseのraw bodyは例外・ログ・応答へ出さない（本文は握り潰す）。
             throw self::providerUnavailable();
         }
 

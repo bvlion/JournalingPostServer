@@ -665,15 +665,16 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * AIが成功していないと確定できるprovider失敗ではclaimを解放し、同じkeyの
-     * retryをそのまま再実行できる。provider HTTPエラーのraw bodyは応答へ出さない。
+     * AIが成功していないと確定できるprovider失敗（4xx。429等を含む）では
+     * claimを解放し、同じkeyのretryをそのまま再実行できる。provider HTTPエラーの
+     * raw bodyは応答へ出さない。
      */
     public function testConfirmedProviderFailureReleasesTheClaim(): void
     {
         $apiKey = $this->register();
         $transport = new FakeResponsesTransport();
         $transport->willReturn(
-            503,
+            429,
             '{"error":{"message":"upstream detail must not leak"}}',
         );
         $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
@@ -698,6 +699,53 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
         self::assertSame(200, $recovered->getStatusCode());
         self::assertSame(2, $transport->callCount);
+    }
+
+    /**
+     * provider 5xx はHTTPエラー応答を受け取っただけでは生成・課金の有無を確定
+     * できない。ユーザー向け応答は4xxと同じ`503 analysis_unavailable`だが、
+     * claimは解放しない。同じIdempotency-Keyの即時retryはAIを再実行せず、
+     * 保持期間内は`409 analysis_in_progress`になる。raw bodyは応答へ出さない。
+     */
+    public function testProviderFiveXxKeepsTheClaimAndBlocksImmediateReanalysis(): void
+    {
+        $apiKey = $this->register();
+        $transport = new FakeResponsesTransport();
+        $transport->willReturn(
+            502,
+            '{"error":{"message":"upstream detail must not leak"}}',
+        );
+        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+
+        $failed = $this->analyse($apiKey, analyzer: $analyzer);
+
+        self::assertSame(503, $failed->getStatusCode());
+        self::assertSame(
+            'analysis_unavailable',
+            self::payload($failed)['error']['code'],
+        );
+        self::assertStringNotContainsString(
+            'upstream detail must not leak',
+            (string) $failed->getBody(),
+        );
+        // claimは残る（解放しない）。
+        self::assertSame(1, $this->countRows('analysis_requests'));
+        self::assertNull(
+            $this->connection
+                ->query('SELECT completed_at FROM analysis_requests')
+                ->fetchColumn(),
+        );
+
+        // 即時retryはAIを再実行しない。
+        $transport->willReturn(200, self::openAiResponsesBody());
+        $retry = $this->analyse($apiKey, analyzer: $analyzer);
+
+        self::assertSame(409, $retry->getStatusCode());
+        self::assertSame(
+            'analysis_in_progress',
+            self::payload($retry)['error']['code'],
+        );
+        self::assertSame(1, $transport->callCount);
     }
 
     /**

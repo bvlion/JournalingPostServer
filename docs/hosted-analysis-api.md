@@ -223,7 +223,7 @@ ZDRを有効化する場合はデプロイ運用（`docs/production-environment.
 ### secretとprovider error
 
 - `OPENAI_API_KEY`の実値を、repository・response・通常ログ・例外メッセージへ出しません。
-- OpenAIがHTTPエラーを返した場合、そのresponse bodyを例外文・ログ・error responseへ出さず、固定のerror契約（`503 analysis_unavailable`）へ変換します。
+- OpenAIがHTTPエラーを返した場合、そのresponse bodyを例外文・ログ・error responseへ出さず、固定のerror契約（`503 analysis_unavailable`）へ変換します。4xxはclaimを解放して再実行可能にし、5xxはHTTPエラー応答だけからは生成・課金の有無を確定できないためclaimを解放しません（応答は同じ`503`）。詳細は「AIへ送信後、結果を確定できない失敗」。
 - 設定は`.env`の`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`です。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合は、秘密値を含めずに起動を失敗させます。
 
 
@@ -267,10 +267,10 @@ OpenAI呼び出しがtimeoutした場合など、requestを送信した後で処
 
 Serverは解析の失敗を2種類に分けて扱います。
 
-1. **AIが成功していないと確定できる失敗**（requestがOpenAIへ到達しなかった、OpenAIがHTTPエラーを返した等）。claimを解放し、同じ`Idempotency-Key`での再送をそのまま再実行できるようにします。provider利用不能は`503 analysis_unavailable`です。
-2. **OpenAIへ送信後、処理・課金済みかServerから確定できない失敗**（送信後のtimeout・応答受信の途絶・2xxだが生成結果を利用できない）。claimを解放しません。timeoutは`504 analysis_timeout`、それ以外は`500 internal_error`を返します。AI解析が成功した後に応答の組み立てや完了記録でServer内部エラーが起きた場合（`500 internal_error`）も同じ扱いです。いずれもAI呼び出しは課金され得るため、解放してretryが即座にAIを再実行するのを避けます。
+1. **AIが成功していないと確定できる失敗**（requestがOpenAIへ到達しなかった、OpenAIが4xx〈`429`等を含む〉を返した等。いずれも処理前の拒否と確定できます）。claimを解放し、同じ`Idempotency-Key`での再送をそのまま再実行できるようにします。応答は`503 analysis_unavailable`です。
+2. **OpenAIへ送信後、処理・課金済みかServerから確定できない失敗**（送信後のtimeout・応答受信の途絶・**OpenAIの5xx応答**・2xxだが生成結果を利用できない）。claimを解放しません。timeoutは`504 analysis_timeout`、5xxは4xxと同じ`503 analysis_unavailable`、それ以外は`500 internal_error`を返します。AI解析が成功した後に応答の組み立てや完了記録でServer内部エラーが起きた場合（`500 internal_error`）も同じ扱いです。5xxは、OpenAIがrequestを受理・処理した後の一時的な5xxか処理前の拒否かをHTTPエラー応答だけからは確定できないため、生成・課金が行われた可能性がある側へ倒します。いずれもAI呼び出しは課金され得るため、解放してretryが即座にAIを再実行するのを避けます。
 
-Androidの扱いは`504` / `500`の契約どおりで、**間隔を空けて同じ`Idempotency-Key`で再送**します。新しいkeyへ切り替えないでください。新しいkeyはユーザーが意図した再解析のためのものです。
+Androidの扱いは`504` / `500`の契約どおり、また5xx由来の`503`（`Retry-After`後に同じkeyで再送）も、いずれも**同じ`Idempotency-Key`で再送**します。新しいkeyへ切り替えないでください。新しいkeyはユーザーが意図した再解析のためのものです。
 
 同じkeyでの再送は、保持期間（30分）の間`409 analysis_in_progress`になる場合があります。処理は動いていませんが、二重課金を避けるためclaimを保持している状態です。失効後の再送は新しい解析として受け付けます。
 
@@ -339,7 +339,7 @@ web `max_execution_time`・XServer front proxy の read timeout・Android read t
 | 422 | `validation_error` | request契約違反 | retryしない |
 | 429 | `rate_limited` | 利用上限（**Issue #5で実装**） | `Retry-After`後に同じkeyで再送 |
 | 500 | `internal_error` | Server側の想定外エラー | 間隔を空けて同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある。上記参照） |
-| 503 | `analysis_unavailable` | AI providerが利用できない | `Retry-After`後に同じkeyで再送 |
+| 503 | `analysis_unavailable` | AI providerが利用できない（provider未到達・4xx・5xx） | `Retry-After`後に同じkeyで再送（5xx由来の場合は保持期間内は`409 analysis_in_progress`になり得る） |
 | 504 | `analysis_timeout` | AI解析が`OPENAI_TIMEOUT_SECONDS`内に終わらない | 同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある） |
 
 `429`は契約として予約しています（Issue #5で実装）。`504`はIssue #4で実装しました。

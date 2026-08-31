@@ -222,33 +222,92 @@ final class OpenAiAnalyzerTest extends TestCase
     }
 
     /**
-     * provider HTTPエラーのraw bodyやAPI keyを、例外メッセージへも
-     * error responseへも出さない。HTTPエラー応答は確定失敗（503）。
+     * provider 4xx（429等を含む）は処理前の拒否と確定できる確定失敗。
+     * `503 analysis_unavailable`のApiExceptionを投げ、`CreateAnalysisAction`が
+     * claimを解放できる（＝`AnalysisResultUnconfirmedException`にしない）。
+     * raw bodyやAPI keyを例外メッセージへも応答へも出さない。
      */
-    public function testProviderHttpErrorDoesNotLeakRawBodyOrApiKey(): void
+    public function testProviderFourXxIsAConfirmedFailureWithoutLeakingDetails(): void
     {
         $rawBody = '{"error":{"message":"secret rate limit detail for org_ABC123"}}';
-        $this->transport->willReturn(429, $rawBody);
 
-        try {
-            $this->analyzer()->analyze(self::request());
-            self::fail('ApiExceptionが投げられませんでした。');
-        } catch (ApiException $exception) {
-            self::assertSame(503, $exception->status());
-            self::assertSame('analysis_unavailable', $exception->errorCode());
-            self::assertStringNotContainsString(
-                'secret rate limit detail',
-                $exception->getMessage(),
-            );
-            self::assertStringNotContainsString(
-                'org_ABC123',
-                $exception->getMessage(),
-            );
-            self::assertStringNotContainsString(
-                self::SECRET_KEY,
-                $exception->getMessage(),
-            );
-            self::assertSame([], $exception->details());
+        foreach ([400, 401, 403, 404, 429] as $status) {
+            $this->transport->willReturn($status, $rawBody);
+
+            try {
+                $this->analyzer()->analyze(self::request());
+                self::fail(sprintf('%d でApiExceptionが投げられませんでした。', $status));
+            } catch (AnalysisResultUnconfirmedException $exception) {
+                self::fail(sprintf(
+                    '%d を結果不明（claim非解放）にしてはいけません。',
+                    $status,
+                ));
+            } catch (ApiException $exception) {
+                self::assertSame(503, $exception->status());
+                self::assertSame(
+                    'analysis_unavailable',
+                    $exception->errorCode(),
+                );
+                self::assertStringNotContainsString(
+                    'secret rate limit detail',
+                    $exception->getMessage(),
+                );
+                self::assertStringNotContainsString(
+                    'org_ABC123',
+                    $exception->getMessage(),
+                );
+                self::assertStringNotContainsString(
+                    self::SECRET_KEY,
+                    $exception->getMessage(),
+                );
+                self::assertSame([], $exception->details());
+            }
+        }
+    }
+
+    /**
+     * provider 5xx は、HTTPエラー応答を受け取っただけではOpenAI側で生成・課金が
+     * 行われていないと確定できない。結果不明として`AnalysisResultUnconfirmedException`
+     * で扱い、`CreateAnalysisAction`がclaimを解放しない。ユーザー向け応答は4xxと
+     * 同じ`503 analysis_unavailable`。raw bodyやAPI keyは漏らさない。
+     */
+    public function testProviderFiveXxIsReportedAsUnconfirmed(): void
+    {
+        $rawBody = '{"error":{"message":"secret upstream detail org_XYZ789"}}';
+
+        foreach ([500, 502, 503, 504, 529] as $status) {
+            $this->transport->willReturn($status, $rawBody);
+
+            try {
+                $this->analyzer()->analyze(self::request());
+                self::fail(sprintf(
+                    '%d でAnalysisResultUnconfirmedExceptionが投げられませんでした。',
+                    $status,
+                ));
+            } catch (AnalysisResultUnconfirmedException $exception) {
+                self::assertSame(503, $exception->response()->status());
+                self::assertSame(
+                    'analysis_unavailable',
+                    $exception->response()->errorCode(),
+                );
+                self::assertStringNotContainsString(
+                    'secret upstream detail',
+                    $exception->getMessage(),
+                );
+                self::assertStringNotContainsString(
+                    'org_XYZ789',
+                    $exception->getMessage(),
+                );
+                self::assertStringNotContainsString(
+                    self::SECRET_KEY,
+                    $exception->getMessage(),
+                );
+                self::assertStringNotContainsString(
+                    'secret upstream detail',
+                    $exception->response()->getMessage(),
+                );
+                self::assertSame([], $exception->response()->details());
+            }
         }
     }
 
