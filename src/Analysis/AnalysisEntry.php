@@ -11,7 +11,10 @@ use DateTimeImmutable;
  *
  * Android側のJournalEntryのうち、解析に必要な項目だけを写した値である。
  * `id`・`source`・`deliveryStatus`・`moodId`はServerの解析に不要なため受け取らない。
- * moodのみのentry（`note`がnull）と、noteのみのentry（moodがnull）の双方を表現する。
+ * Moodは絵文字だけ（`moodLabel`がnull）・名称だけ（`moodEmoji`がnull）・両方の
+ * いずれもあり得る。Moodのみのentry（`note`がnull）と、noteのみのentry
+ * （`moodEmoji`・`moodLabel`がともにnull）の双方を表現する。意味のある内容を
+ * 最低1つ持ち、Moodもnoteも無いentryはparserが受け付けない（Issue #11）。
  *
  * この値はrequest処理中だけ存在し、DBへ保存しない。
  */

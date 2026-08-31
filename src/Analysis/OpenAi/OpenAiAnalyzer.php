@@ -226,10 +226,12 @@ RULES;
      *
      * - recordedAt昇順で並べる。
      * - moodがあるentryの本文は次のとおり。
-     *   moodだけなら「気分は{emoji}とのこと」、noteもあればその後へtrimした
-     *   noteを続ける。noteだけならnoteを使う。
-     * - moodLabelは今回AI入力へ追加しない。
+     *   moodに絵文字があれば絵文字、無ければ名称（label）を使い、moodだけ
+     *   なら「気分は{X}とのこと」、noteもあればその後へtrimしたnoteを続ける。
+     *   noteだけならnoteを使う（Issue #11）。
      * - recordedAtはUTCの絶対時刻として扱う。タイムゾーン変換はしない。
+     * - 日時だけのログ行は作らない。Moodもnoteも無いentryはparserが
+     *   `validation_error`で弾き、ここへ到達しない。
      */
     public static function buildTranscript(AnalysisRequest $request): string
     {
@@ -245,10 +247,8 @@ RULES;
                 $timestamp = $entry->recordedAt
                     ->setTimezone(new DateTimeZone('UTC'))
                     ->format('Y-m-d\TH:i:s\Z');
-                $message = self::entryMessage($entry);
 
-                // noteのみのentryの本文はtrimせず渡す。moodもnoteも無いentryは時刻だけの行にする。
-                return $message === '' ? $timestamp : $timestamp . ' ' . $message;
+                return $timestamp . ' ' . self::entryMessage($entry);
             },
             $entries,
         );
@@ -258,12 +258,16 @@ RULES;
 
     private static function entryMessage(AnalysisEntry $entry): string
     {
-        if ($entry->moodEmoji !== null) {
+        // Moodにemojiがあればemoji、無ければlabelを解析材料に使う。label-onlyの
+        // Moodでlabelが失われないようにするため（Issue #11）。
+        $mood = $entry->moodEmoji ?? $entry->moodLabel;
+
+        if ($mood !== null) {
             $note = $entry->note !== null ? trim($entry->note) : '';
 
             return $note === ''
-                ? sprintf('気分は%sとのこと', $entry->moodEmoji)
-                : sprintf('気分は%sとのこと。%s', $entry->moodEmoji, $note);
+                ? sprintf('気分は%sとのこと', $mood)
+                : sprintf('気分は%sとのこと。%s', $mood, $note);
         }
 
         return $entry->note ?? '';

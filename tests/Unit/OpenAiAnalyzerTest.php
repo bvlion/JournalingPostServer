@@ -134,7 +134,11 @@ final class OpenAiAnalyzerTest extends TestCase
         );
     }
 
-    public function testTranscriptDoesNotIncludeMoodLabel(): void
+    /**
+     * moodに絵文字がある場合はemojiを解析材料に使い、labelは使わない（現在の
+     * 入力にlabelが無いため）。
+     */
+    public function testMoodLabelIsNotUsedWhenAnEmojiIsPresent(): void
     {
         $transcript = OpenAiAnalyzer::buildTranscript(
             new AnalysisRequest(
@@ -151,8 +155,44 @@ final class OpenAiAnalyzerTest extends TestCase
             ),
         );
 
-        self::assertStringNotContainsString(
-            'この文字列はAI入力に現れてはならない',
+        self::assertSame(
+            '2026-08-29T01:15:00Z 気分は😐とのこと',
+            $transcript,
+        );
+    }
+
+    /**
+     * 名称だけのMood（emojiが空）は、labelを解析材料に使う。label-only Moodが
+     * AI入力から失われないことを固定する（Issue #11の完了条件）。
+     */
+    public function testLabelOnlyMoodUsesTheLabelAsAnalysisMaterial(): void
+    {
+        $transcript = OpenAiAnalyzer::buildTranscript(
+            new AnalysisRequest(
+                new DateTimeImmutable('2026-08-29T00:00:00Z'),
+                new DateTimeImmutable('2026-08-29T09:00:00Z'),
+                [
+                    new AnalysisEntry(
+                        new DateTimeImmutable('2026-08-29T01:15:00Z'),
+                        null,
+                        'すこし上向き',
+                        null,
+                    ),
+                    new AnalysisEntry(
+                        new DateTimeImmutable('2026-08-29T05:40:00Z'),
+                        null,
+                        'しずか',
+                        '  カフェで集中できた  ',
+                    ),
+                ],
+            ),
+        );
+
+        self::assertSame(
+            implode("\n", [
+                '2026-08-29T01:15:00Z 気分はすこし上向きとのこと',
+                '2026-08-29T05:40:00Z 気分はしずかとのこと。カフェで集中できた',
+            ]),
             $transcript,
         );
     }

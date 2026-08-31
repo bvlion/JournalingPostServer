@@ -2,7 +2,7 @@
 
 AndroidアプリJournalingPost（`bvlion/JournalingPost`）とJournalingPostServerが共有するHTTP契約です。Issue #2で定義しました。
 
-対応するAndroid側のIssueは`bvlion/JournalingPost#40`（Hosted解析の接続）と`#37`（AnalysisResultの端末保存）です。
+対応するAndroid側のIssueは`bvlion/JournalingPost#40`（Hosted解析の接続）と`#37`（AnalysisResultの端末保存）です。JournalEntryの最小内容契約（Moodは絵文字だけ・名称だけ・両方のいずれでも可、noteだけでも可、Moodもnoteも無いentryは不可）はIssue #11でAndroid `#42` / `#50` に合わせました。
 
 ## 位置づけ
 
@@ -134,7 +134,7 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
     },
     {
       "recordedAt": "2026-08-29T05:40:00Z",
-      "mood": { "emoji": "🙂", "label": "すこし上向き" },
+      "mood": { "emoji": "", "label": "すこし上向き" },
       "note": "架空のメモ"
     },
     {
@@ -150,11 +150,12 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 | `period.start` / `period.end` | 必須 | RFC 3339。`start < end` |
 | `entries` | 必須 | 1〜200件 |
 | `entries[].recordedAt` | 必須 | RFC 3339 |
-| `entries[].mood` | 任意 | 指定する場合は`emoji`（1〜16文字）と`label`（1〜100文字）の両方が必要 |
-| `entries[].note` | 任意 | 1〜2000文字。空白のみは未指定と同じに扱う |
+| `entries[].mood` | 任意 | Moodがあるentryだけ指定。`emoji`（16文字以内）と`label`（100文字以内）の文字列で、少なくとも一方が空白以外（もう一方は空文字または省略でよい） |
+| `entries[].note` | 任意 | 2000文字以内。空白のみは未指定と同じに扱う |
 
-- moodのみのentry（`note`なし）とnoteのみのentry（`mood`なし）の双方を送れます。
-- Android側`JournalEntry`の`id` / `source` / `deliveryStatus` / `moodId`は解析に不要なため送りません。`moodEmoji` / `moodLabel`は記録時点のsnapshotをそのまま送ります。
+- 各entryは利用者が記録した意味のある内容を最低1つ持ちます。許可する状態はMoodのみ / Mood + note / noteのみで、Moodもnoteも無い（日時だけの）entryは`422 validation_error`です。
+- Moodは絵文字だけ・名称だけ・両方のいずれでも送れます。noteのみのentry（`mood`なし）も正規の状態です。
+- Android側`JournalEntry`の`id` / `source` / `deliveryStatus` / `moodId`は解析に不要なため送りません。`mood`は記録時点のsnapshotをそのまま送ります。ServerはMoodの同一性を判定しません。
 - `entries`が`period`の範囲内かをServerは検証しません。対象期間の切り出しはAndroid側の責務です。
 - `entries`の順序は解析上の意味を持ちませんが、idempotency判定には影響します（後述）。
 - `entries`が0件の場合はAI呼び出しを行わず`validation_error`を返します。対象期間に記録が無い場合、Androidは解析requestを送りません。
@@ -204,9 +205,9 @@ ServerはHTTP応答のtop-level `status`が`completed`のResponseだけを構造
 
 - system prompt（固定文）と、分析ルール本文（固定文）＋対象期間のログ文字列。
 - ログ文字列は`AnalysisRequest.entries`から組み立てます。entryを`recordedAt`昇順（UTCの絶対時刻）に並べ、1行ずつ`<recordedAt> <本文>`にします。
-  - moodがあるentryの本文は次のように組み立てます。moodのみなら「気分は{emoji}とのこと」、noteもあればその後へtrimしたnoteを続けます。
+  - moodがあるentryの本文は次のように組み立てます。moodに絵文字があれば絵文字、無ければ名称（`label`）を使い、moodのみなら「気分は{X}とのこと」、noteもあればその後へtrimしたnoteを続けます。
   - noteのみのentryはnoteをそのまま使います。
-  - `moodLabel`はAI入力へ含めません（現行のSlackログにも含まれていないため）。
+  - 絵文字だけのMoodは絵文字、名称だけのMoodは名称が解析材料になります。日時だけのログ行は作りません（そのようなentryは`422`で拒否されます）。
 - 送らないもの: `Idempotency-Key`、`ANALYSIS_FINGERPRINT_SECRET`、installation識別子、API key hash。`OPENAI_API_KEY`は`Authorization`ヘッダーにのみ使い、bodyへは入れません。
 
 ### OpenAI側のデータ保持
@@ -315,7 +316,7 @@ web `max_execution_time`・XServer front proxy の read timeout・Android read t
   "error": {
     "code": "validation_error",
     "message": "The request does not satisfy the analysis request contract.",
-    "details": ["entries[1].mood.label: must be a non-empty string."]
+    "details": ["entries[1].mood: must have a non-empty emoji or label."]
   }
 }
 ```
