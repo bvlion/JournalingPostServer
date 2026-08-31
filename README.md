@@ -6,7 +6,7 @@ JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を
 
 解析開始の主体は手動・自動ともAndroidです。実行タイミング（timezone・recurrence・自動解析スケジュール）の判断と解析後の通知はAndroid側で行うため、サーバーはscheduler・Pushサーバーになりません。FCM・`triggerAt`・Push予約は使用しません（Issue #3で採用しないと決定）。
 
-実装済みなのは、サーバーの土台（Issue #7）、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）、Hosted AI解析（Issue #4）です。Hosted Server全体は親Issue #1 で管理しています。**本番デプロイと、本番timeout秒数を決めるための実測はまだ行っていません**（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」を参照）。
+実装済みなのは、サーバーの土台（Issue #7）、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）、Hosted AI解析（Issue #4）です。Hosted Server全体は親Issue #1 で管理しています。実OpenAI / XServerでのtimeout実測を行い、`OPENAI_TIMEOUT_SECONDS` は `45` 秒に決定しました（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）。**本番デプロイはまだ行っていません**。
 
 API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめています。AndroidとServerはこの文書を共有します。
 
@@ -62,9 +62,9 @@ cp .env.example .env
 | `DB_PASSWORD` | データベースのパスワード |
 | `ANALYSIS_FINGERPRINT_SECRET` | 解析requestのfingerprintを鍵付きにするための秘密値（32文字以上） |
 | `OPENAI_API_KEY` | OpenAI Responses APIのAPI key |
-| `OPENAI_TIMEOUT_SECONDS` | OpenAI呼び出しのtimeout秒数（正の整数）。本番値は実provider / XServerでの実測から決める |
+| `OPENAI_TIMEOUT_SECONDS` | OpenAI呼び出しのtimeout秒数（正の整数）。実測により本番値は `45`（[本番timeoutの決定](docs/hosted-analysis-api.md#timeout)） |
 
-すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`ANALYSIS_FINGERPRINT_SECRET`は32文字未満、`OPENAI_TIMEOUT_SECONDS`は正の整数でない場合も同じように失敗します。`.env.example`の値はすべて実データから生成していない架空値です（`OPENAI_TIMEOUT_SECONDS`の`120`はローカル / CI用のplaceholderで、本番値ではありません）。
+すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`ANALYSIS_FINGERPRINT_SECRET`は32文字未満、`OPENAI_TIMEOUT_SECONDS`は正の整数でない場合も同じように失敗します。`.env.example`の`OPENAI_API_KEY`など秘密系の値はすべて実データから生成していない架空値です。`OPENAI_TIMEOUT_SECONDS=45`は実測にもとづく本番相当値です。
 
 `ANALYSIS_FINGERPRINT_SECRET`は、DBを読める状態からJournalEntryの内容を候補照合で言い当てられないようにするためのものです（[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照）。ランダム値を1度だけ生成し、**deployを跨いで同じ値を使います**。値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になります。
 
@@ -215,13 +215,13 @@ make check-clean
 - Composer 2系。依存関係はリポジトリの`composer.lock`どおりに導入
 - `pdo_mysql` / `mbstring` / `json` / `openssl` / `curl`が利用可能
 - サーバーからOpenAI（`api.openai.com`）へのHTTPS outboundが必要（AI解析。curlで呼ぶ）
-- `.env`に`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`を設定する。`OPENAI_TIMEOUT_SECONDS`の本番値は実provider / XServerでの実測から決める（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）
+- `.env`に`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`（実測により`45`）を設定する（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）
 - Hosted APIはHTTPSでのみ提供する。平文HTTPのrequestは`.htaccess`でリダイレクトせず拒否する（Bearer API keyとJournalEntry本文を平文HTTPで送らせない）
 - アプリ本体はドキュメントルート外へ配置し、`public_html`には`public/index.php`へのシンボリックリンクと`public/.htaccess`のコピーだけを置く
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
 - XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Cronの用途はこれだけである
 
-**本番デプロイは行っていません。** XServer上のファイル・DB・cron・秘密情報にも触れていません。実`OPENAI_API_KEY`とXServerでのOpenAI応答時間の実測も未実施で、本番`OPENAI_TIMEOUT_SECONDS`は未確定です。
+**本番デプロイは行っていません。** XServer上の本番ファイル・DB・cron・秘密情報には触れていません。timeout実測は専用の検証ディレクトリ（本番と分離）で実施し、`OPENAI_TIMEOUT_SECONDS = 45` を決定しました。web SAPIの`max_execution_time`はサーバーパネル設定のため未確認で、配置前に60秒以上であることの確認が必要です。
 
 ## 未実装のもの
 

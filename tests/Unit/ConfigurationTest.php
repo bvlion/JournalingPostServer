@@ -27,7 +27,7 @@ final class ConfigurationTest extends TestCase
                     'fingerprintSecret' =>
                         'example_fingerprint_secret_not_for_production_use',
                     'openAiApiKey' => 'sk-example-not-a-real-openai-key',
-                    'openAiTimeoutSeconds' => 120,
+                    'openAiTimeoutSeconds' => 45,
                 ],
             ],
             $configuration,

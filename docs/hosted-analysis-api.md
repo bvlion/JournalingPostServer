@@ -276,22 +276,32 @@ Androidの扱いは`504` / `500`の契約どおりで、**間隔を空けて同�
 
 ### timeout
 
-- Serverは`OPENAI_TIMEOUT_SECONDS`でOpenAI呼び出しのtimeoutを設定します。これを超えると`504 analysis_timeout`を返します。本番で使う秒数は実provider / XServerでの実測から決めます（未測定。下記「本番timeoutの決定」）。
-- Androidの読み取りtimeoutは、Server側timeout＋応答生成の余裕を見て決めます。目安は120秒ですが、Server側timeoutの確定後に合わせます。
+- Serverは`OPENAI_TIMEOUT_SECONDS`でOpenAI呼び出しのtimeoutを設定します。これを超えると`504 analysis_timeout`を返します。実測（下記「本番timeoutの決定」）から **本番値は `45` 秒** とします。
+- **Androidの読み取りtimeoutは `90` 秒を推奨します。** Serverが`504`を返すまでの上限は `OPENAI_TIMEOUT_SECONDS`（45秒）＋ request解析・応答整形・DB書き込みの数秒 ≈ 50秒で、90秒はその上に余裕を持たせた値です。Android側の実測後に短縮して構いません。
 - timeout（`504`）したrequestは、`Retry-After`に従って同じ`Idempotency-Key`で再送してください。送信済みのAI呼び出しを二重課金しないため、Serverはその世代のclaimを保持し、保持期間（30分）内の再送は`409 analysis_in_progress`になり得ます。
 - 保持期間（30分）を過ぎてからの再送は新しい解析になります。それより後にretryしないでください。
 
-#### 本番timeoutの決定（未測定）
+#### 本番timeoutの決定
 
-XServer / PHP / OpenAI Responses APIでの所要時間は未確定です。本番へ出す前に次を実測します。
+XServer上でPR #10のproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransport`）をそのまま使い、実OpenAI Responses APIへ接続して測定しました（`/opt/php-8.5.5/bin/php`、curl 7.61.1 / OpenSSL 1.1.1k、測定用curl timeout 180秒、架空のJournalEntry）。詳細と生の数値はIssue #4のコメントに記録しています。
 
-- `gpt-5.6-luna` / reasoning `none` / 現行promptでの通常の応答時間
-- entry件数（〜200件）を増やしたときの応答時間
-- XServer（Apache / PHP）のHTTP実行時間・接続維持の制約
-- OpenAI側のtimeout挙動
-- Android HTTP clientで現実的に設定できるtimeoutとの整合
+| case | entry数 | request payload | 成功応答の所要時間 |
+| --- | --- | --- | --- |
+| 1 entry | 1 | 約3.6 KB | 約2.2秒 |
+| 20 entries | 20 | 約5.2 KB | 約2.9〜4.2秒 |
+| 100 entries | 100 | 約11.8 KB | 約2.9〜4.2秒 |
+| 200 entries（約1000字note）| 200 | 約404 KiB | 約3.2〜4.3秒 |
 
-この結果から`OPENAI_TIMEOUT_SECONDS`とAndroid側timeoutを決め、同期HTTPで安定して成立しない場合にだけ非同期化を検討します。
+- 全成功応答が `status = completed` かつ strict schemaの7項目を満たしました（実APIに対するPR #10のstatus判定・schema検証も兼ねています）。
+- 所要時間は入力サイズにほぼ依存せず 2.2〜4.3秒。`gpt-5.6-luna` + reasoning `none` の応答は短くばらつきも小さいです。
+- サンプルは短時間内の少数回で、高パーセンタイル・時間帯変動は未測定です。
+
+結論: **同期HTTPは成立します。** 非同期化は不要です。
+
+- `OPENAI_TIMEOUT_SECONDS = 45`: 実測最大（約4.3秒）の約10倍。少数サンプルの余裕をとりつつ、プラットフォームのweb実行上限より十分小さくして、Server自身の`504`（claim非解放）が先に発火するようにします。本番監視で45秒に近づく応答が出たら見直します。
+- Android read timeout = 90秒（上記）。
+
+本番投入前に、XServerサーバーパネルのPHP設定で **web の `max_execution_time` が60秒以上**（45秒のOpenAI呼び出し＋オーバーヘッドがweb request内で完了できること）を確認します。CLIは無制限ですがAPIはweb SAPIで動きます。OpenAI側のリクエストtimeoutは意図的に発生させていません（`max_output_tokens: 800` / `reasoning: none` で生成は短く、超過時は `status: incomplete` として扱われます）。
 
 ## Error response
 
