@@ -29,7 +29,7 @@ Android                         Server
 
 自動解析でも同じ流れです。ServerがtriggerAtを持ってFCMでAndroidを起こす構成は採用しません（Issue #3を`not planned`でclose）。Serverが持たないのは、FCM token・`triggerAt`・ScheduledTrigger・Push予約・scheduler・timezone・recurrenceです。
 
-AI provider実装はIssue #4、rate limit / usage / 登録endpointのabuse対策はIssue #5で扱います。
+AI provider呼び出しはIssue #4で実装しました。rate limit / usage / 登録endpointのabuse対策はIssue #5で扱います。
 
 ## 共通事項
 
@@ -171,7 +171,7 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
     },
     "analyzedAt": "2026-08-29T09:00:05Z",
     "entryCount": 3,
-    "model": "example/analysis-model",
+    "model": "gpt-5.6-luna",
     "text": "..."
   }
 }
@@ -182,12 +182,50 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 | `period` | 解析対象期間。requestの値をUTC・秒精度へ正規化して返す |
 | `analyzedAt` | 解析完了時刻 |
 | `entryCount` | 解析に使ったentry数 |
-| `model` | 解析に使ったAI model識別子。Issue #4が値を決める |
+| `model` | 解析に使ったAI model識別子。Hosted解析は`gpt-5.6-luna`（OpenAI Responses API）を使う。補足情報 |
 | `text` | 振り返り本文（プレーンテキスト） |
 
 Android側`AnalysisResult`が必要とする「対象期間」「解析日時」「解析結果」はこの応答から作れます。「解析方法 / 種別」はAndroid側が持つ区分（Hosted / Custom Webhook）であり、Serverは指定しません。`model`は補足情報です。
 
-振り返り本文を単一の`text`にしているのは、prompt設計（Issue #4）が構造を確定していないためです。将来の構造化はフィールド追加（互換）で行います。
+振り返り本文を単一の`text`にしているのは、Android側`AnalysisResult`が本文を1つのプレーンテキストとして持つためです。`text`には良かったこと / 嫌だったこと / 感情スコア / 感情タイプ / 要約 / AI アドバイス / タグの7項目を固定順で整形して入れます（good / badは箇条書き、空なら「なし」）。将来の構造化はフィールド追加（互換）で行います。
+
+## AI provider（OpenAI）
+
+Hosted解析はOpenAI Responses APIで行います（`JournalingPostServer\Analysis\OpenAi\OpenAiAnalyzer`）。
+
+- endpoint: `POST https://api.openai.com/v1/responses`（curl拡張で呼び出す。OpenAI SDKは追加しない）
+- model: `gpt-5.6-luna` / reasoning effort `none` / `max_output_tokens` 800 / `text.verbosity` `low`
+- `text.format`: strict JSON Schema（`slack_log_emotion_analysis`）。出力は good / bad / score / emotion / summary / advice / tags の7項目
+- `store: false`。生成Responseを後から`GET /v1/responses/{id}`で取得するための保存を無効にする設定で、現在の値のまま変更していません。OpenAI側のすべてのデータ保持をゼロにする設定ではありません（下記「OpenAI側のデータ保持」）
+
+ServerはHTTP応答のtop-level `status`が`completed`のResponseだけを構造化結果の成功候補にします。`status`が`incomplete`（例: `incomplete_details.reason` = `max_output_tokens`）や`failed`のResponseは、schema-validなoutput_textを含んでいても成功にせず、OpenAI呼び出し済みで結果を確定できない失敗として扱います（claimを解放しない。下記「AIへ送信後、結果を確定できない失敗」）。
+
+### OpenAIへ送る内容
+
+- system prompt（固定文）と、分析ルール本文（固定文）＋対象期間のログ文字列。
+- ログ文字列は`AnalysisRequest.entries`から組み立てます。entryを`recordedAt`昇順（UTCの絶対時刻）に並べ、1行ずつ`<recordedAt> <本文>`にします。
+  - moodがあるentryの本文は次のように組み立てます。moodのみなら「気分は{emoji}とのこと」、noteもあればその後へtrimしたnoteを続けます。
+  - noteのみのentryはnoteをそのまま使います。
+  - `moodLabel`はAI入力へ含めません（現行のSlackログにも含まれていないため）。
+- 送らないもの: `Idempotency-Key`、`ANALYSIS_FINGERPRINT_SECRET`、installation識別子、API key hash。`OPENAI_API_KEY`は`Authorization`ヘッダーにのみ使い、bodyへは入れません。
+
+### OpenAI側のデータ保持
+
+`store: false`はServerが後からResponseを取得しないための設定にすぎません。OpenAIのData Controls上、標準のAPI利用では次が該当し得ます。実装はこれらを前提にした設計です。
+
+- API input / output はデフォルトではmodel学習に使用されません。
+- 標準のAPI利用ではabuse monitoring logsにprompt / responseが含まれ得て、最大30日保持され得ます。
+- `/v1/responses`はZero Data Retention（ZDR）の対象ですが、ZDRはOpenAIの承認・アカウント設定が必要です。現在のServer実装はZDRが有効であることを前提にしません。
+- ZDR未設定では、対応modelのextended prompt cachingによりOpenAI側に一時的なapplication stateが存在し得ます。
+
+ZDRを有効化する場合はデプロイ運用（`docs/production-environment.md`）で扱います。ZDRの有無でServerのrequest / responseとerror契約は変わりません。
+
+### secretとprovider error
+
+- `OPENAI_API_KEY`の実値を、repository・response・通常ログ・例外メッセージへ出しません。
+- OpenAIがHTTPエラーを返した場合、そのresponse bodyを例外文・ログ・error responseへ出さず、固定のerror契約（`503 analysis_unavailable`）へ変換します。4xxはclaimを解放して再実行可能にし、5xxはHTTPエラー応答だけからは生成・課金の有無を確定できないためclaimを解放しません（応答は同じ`503`）。詳細は「AIへ送信後、結果を確定できない失敗」。
+- 設定は`.env`の`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`です。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合は、HTTPアプリの起動を秘密値を含めずに失敗させます。DBだけを使うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）はこれらを検証しないため、`OPENAI_API_KEY`を空にしても失効データ削除Cronは動き続けます。
+
 
 ## Idempotency / retry / timeout
 
@@ -223,23 +261,50 @@ Android側`AnalysisResult`が必要とする「対象期間」「解析日時」
 
 失効後に同じkeyで新しい解析が始まった後で、古い処理が遅れて終わることがあります。この場合、古い処理は新しい解析の完了記録も引き渡しバッファも書き換えません。完了記録・バッファ書き込み・解放のいずれも、自分が取得したclaim（取得時刻が一致し、まだ完了していない行）だけを対象にします。古い結果が新しいrequestの応答として返ることはありません。
 
-AI provider側のtimeoutを前提にした早期の復帰や、provider呼び出し自体の打ち切りは、実providerのtimeout特性を確認できるIssue #4で判断します。#2ではDB側のclaim所有条件までを契約とし、provider固有の制御を先回りして実装しません。
+OpenAI呼び出しがtimeoutした場合など、requestを送信した後で処理・課金済みかをServerから確定できない失敗では、claimを解放しません。解放すると同じkeyの即時retryがOpenAIを再実行して二重に課金し得るためです。この場合はその世代のclaimが保持期間（30分）で失効するまで`409 analysis_in_progress`を返し、失効後は新しい解析として受け付けます。詳細は次節。
 
-### AI解析後にServer内部エラーが起きた場合
+### AIへ送信後、結果を確定できない失敗
 
-AI解析が成功した後、応答の組み立てや完了記録でServer内部エラーが起きると`500 internal_error`を返します。このときServerは未完了のclaimを解放しません。AI呼び出しは既に課金済みであり、解放するとそのkeyのretryが即座にAIを再実行して二重に課金するためです。
+Serverは解析の失敗を2種類に分けて扱います。
 
-Androidの扱いは`500`の契約どおりで、**間隔を空けて同じ`Idempotency-Key`で再送**します。新しいkeyへ切り替えないでください。新しいkeyはユーザーが意図した再解析のためのものです。
+1. **AIが成功していないと確定できる失敗**（requestがOpenAIへ到達しなかった、OpenAIが4xx〈`429`等を含む〉を返した等。いずれも処理前の拒否と確定できます）。claimを解放し、同じ`Idempotency-Key`での再送をそのまま再実行できるようにします。応答は`503 analysis_unavailable`です。
+2. **OpenAIへ送信後、処理・課金済みかServerから確定できない失敗**（送信後のtimeout・応答受信の途絶・**OpenAIの5xx応答**・2xxだが生成結果を利用できない）。claimを解放しません。timeoutは`504 analysis_timeout`、5xxは4xxと同じ`503 analysis_unavailable`、それ以外は`500 internal_error`を返します。AI解析が成功した後に応答の組み立てや完了記録でServer内部エラーが起きた場合（`500 internal_error`）も同じ扱いです。5xxは、OpenAIがrequestを受理・処理した後の一時的な5xxか処理前の拒否かをHTTPエラー応答だけからは確定できないため、生成・課金が行われた可能性がある側へ倒します。いずれもAI呼び出しは課金され得るため、解放してretryが即座にAIを再実行するのを避けます。
+
+Androidの扱いは`504` / `500`の契約どおり、また5xx由来の`503`（`Retry-After`後に同じkeyで再送）も、いずれも**同じ`Idempotency-Key`で再送**します。新しいkeyへ切り替えないでください。新しいkeyはユーザーが意図した再解析のためのものです。
 
 同じkeyでの再送は、保持期間（30分）の間`409 analysis_in_progress`になる場合があります。処理は動いていませんが、二重課金を避けるためclaimを保持している状態です。失効後の再送は新しい解析として受け付けます。
 
-解放条件の見直しは、実AI providerの失敗特性を確認できるIssue #4で判断します。
-
 ### timeout
 
-- Androidの読み取りtimeoutは120秒を目安にしてください。実際の上限はIssue #4でAI providerの応答時間を実測して決めます。
-- timeoutしたrequestは、`Retry-After`に従って同じ`Idempotency-Key`で再送してください。
+- Serverは`OPENAI_TIMEOUT_SECONDS`でOpenAI呼び出しのtimeoutを設定します。これを超えると`504 analysis_timeout`を返します。実測（下記「本番timeoutの決定」）から **本番値は `45` 秒** とします。
+- **Androidの読み取りtimeoutは `90` 秒を推奨します。** Serverが`504`を返すまでの上限は `OPENAI_TIMEOUT_SECONDS`（45秒）＋ request解析・応答整形・DB書き込みの数秒 ≈ 50秒で、90秒はその上に余裕を持たせた値です。Android側の実測後に短縮して構いません。
+- timeout（`504`）したrequestは、`Retry-After`に従って同じ`Idempotency-Key`で再送してください。送信済みのAI呼び出しを二重課金しないため、Serverはその世代のclaimを保持し、保持期間（30分）内の再送は`409 analysis_in_progress`になり得ます。
 - 保持期間（30分）を過ぎてからの再送は新しい解析になります。それより後にretryしないでください。
+
+#### 本番timeoutの決定
+
+XServer上でPR #10のproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransport`）をそのまま使い、実OpenAI Responses APIへ接続して測定しました（`/opt/php-8.5.5/bin/php`、curl 7.61.1 / OpenSSL 1.1.1k、測定用curl timeout 180秒、架空のJournalEntry）。詳細と生の数値はIssue #4のコメントに記録しています。
+
+| case | entry数 | request payload | 成功応答の所要時間 |
+| --- | --- | --- | --- |
+| 1 entry | 1 | 約3.6 KB | 約2.2秒 |
+| 20 entries | 20 | 約5.2 KB | 約2.9〜4.2秒 |
+| 100 entries | 100 | 約11.8 KB | 約2.9〜4.2秒 |
+| 200 entries（約1000字note）| 200 | 約404 KiB | 約3.2〜4.3秒 |
+
+- 全成功応答が `status = completed` かつ strict schemaの7項目を満たしました（実APIに対するPR #10のstatus判定・schema検証も兼ねています）。
+- 所要時間は入力サイズにほぼ依存せず 2.2〜4.3秒。`gpt-5.6-luna` + reasoning `none` の応答は短くばらつきも小さいです。
+- サンプルは短時間内の少数回で、高パーセンタイル・時間帯変動は未測定です。
+
+結論: **同期HTTPは成立します。** 非同期化は不要です。
+
+- `OPENAI_TIMEOUT_SECONDS = 45` の採用根拠は次の2点です。web / FastCGI / front proxy の timeout は確認していません。
+  - 実OpenAI成功応答の実測最大が約4.3秒。
+  - 少数サンプルで高パーセンタイル・時間帯変動を測れていないため、十分な余裕をとる。
+  - 本番監視で45秒に近づく応答が出たら見直します。
+- Android read timeout = 90秒（上記）。
+
+web `max_execution_time`・XServer front proxy の read timeout・Android read timeout は、いずれも未確認または端末側の設定です。本番配置前の前提条件として、**45秒の provider timeout ＋ request 処理の overhead を、これら外側の timeout がすべて上回ること**を確認します。この条件を満たした場合にだけ、遅いケースで Server 側の `504 analysis_timeout`（claim 非解放）が外側の timeout より先に発火し、二重課金を避けられます。CLI PHP は `max_execution_time = 0`（無制限）ですが API は web SAPI で動くため、web 側の値をサーバーパネルの PHP 設定で確認します。OpenAI 側のリクエスト timeout は意図的に発生させていません（`max_output_tokens: 800` / `reasoning: none` で生成は短く、超過時は `status: incomplete` として扱われます）。
 
 ## Error response
 
@@ -274,10 +339,10 @@ Androidの扱いは`500`の契約どおりで、**間隔を空けて同じ`Idemp
 | 422 | `validation_error` | request契約違反 | retryしない |
 | 429 | `rate_limited` | 利用上限（**Issue #5で実装**） | `Retry-After`後に同じkeyで再送 |
 | 500 | `internal_error` | Server側の想定外エラー | 間隔を空けて同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある。上記参照） |
-| 503 | `analysis_unavailable` | AI providerが利用できない | `Retry-After`後に同じkeyで再送 |
-| 504 | `analysis_timeout` | AI解析が時間内に終わらない（**Issue #4で実装**） | 同じkeyで再送 |
+| 503 | `analysis_unavailable` | AI providerが利用できない（provider未到達・4xx・5xx） | `Retry-After`後に同じkeyで再送（5xx由来の場合は保持期間内は`409 analysis_in_progress`になり得る） |
+| 504 | `analysis_timeout` | AI解析が`OPENAI_TIMEOUT_SECONDS`内に終わらない | 同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある） |
 
-`429`と`504`は契約として予約しています。#2の実装では返しません。
+`429`は契約として予約しています（Issue #5で実装）。`504`はIssue #4で実装しました。
 
 エラーの種類にかかわらず、AndroidはJournalEntryをローカルに保持し続けます。解析に失敗しても記録は失われません。
 
@@ -315,14 +380,13 @@ Androidの扱いは`500`の契約どおりで、**間隔を空けて同じ`Idemp
 
 AI呼び出しは`JournalingPostServer\Analysis\Analyzer`の1点に閉じています。認証・request検証・idempotency・error契約はこのinterfaceの実装に依存しません。
 
-- Issue #4はこのinterfaceのAI provider実装を追加します。この文書のrequest / response契約は変わりません。
-- #2の時点の既定実装は`UnavailableAnalyzer`で、認証・検証・idempotencyを通したうえでAI呼び出しの直前に`503 analysis_unavailable`を返します。
-- Issue #4でXServer / PHP / AI APIの実測により同期処理が成立しないと分かった場合にだけ、非同期化を検討します。その場合も`POST /v1/analyses`は受付として残し、結果取得を追加する形を優先します。先回りして非同期基盤を作りません。
+- Issue #4で`OpenAi\OpenAiAnalyzer`（curl transport）を既定実装として追加しました。この文書のrequest / response契約は変わりません。
+- テストは`Analyzer`をこのseamで差し替え、実OpenAIへ接続しません。
+- XServer / PHP / OpenAI APIの実測により同期処理が成立しないと分かった場合にだけ、非同期化を検討します。その場合も`POST /v1/analyses`は受付として残し、結果取得を追加する形を優先します。先回りして非同期基盤を作りません。
 
 ## このIssueで実装していないこと
 
-- AI provider呼び出しとprompt（Issue #4）
-- AI provider固有のtimeoutと呼び出しの打ち切り（Issue #4）
+- provider呼び出し自体の打ち切り（Serverはtimeout時にconnection側で打ち切り、`504`を返す。呼び出しのキャンセル通知はOpenAIへ送らない）
 - rate limit、usage集計、登録endpointのabuse対策（Issue #5）
 - account / profile、timezone、recurrence、entitlement、広告状態
 - JournalEntry / AnalysisResultのクラウド保存

@@ -7,7 +7,7 @@ use JournalingPostServer\Database\MigrationRunner;
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-$configuration = require __DIR__ . '/../bootstrap/config.php';
+$configuration = require __DIR__ . '/../bootstrap/database-config.php';
 $databaseConfiguration = $configuration['database'];
 $connection = (new ConnectionFactory(
     $databaseConfiguration['host'],

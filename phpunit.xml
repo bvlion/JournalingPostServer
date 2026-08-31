@@ -18,5 +18,8 @@
         <env name="DB_NAME" value="example_database" force="true"/>
         <env name="DB_USER" value="example_database_user" force="true"/>
         <env name="DB_PASSWORD" value="example_database_password" force="true"/>
+        <env name="ANALYSIS_FINGERPRINT_SECRET" value="example_fingerprint_secret_not_for_production_use" force="true"/>
+        <env name="OPENAI_API_KEY" value="sk-example-not-a-real-openai-key" force="true"/>
+        <env name="OPENAI_TIMEOUT_SECONDS" value="45" force="true"/>
     </php>
 </phpunit>

@@ -63,10 +63,17 @@
 - 通常の検証には`make check`を使用します。`make check`は検証専用のCompose projectだけを使い、開発用のcontainer・network・volume・host portには触れません。
 - 上記について判断できない場合は、実行せず作業を止めて確認します。
 
-## 本番環境の安全ルール
+## 本番環境・SSHの安全ルール
 
-- 利用者の明示的な指示がない限り、XServer本番環境のファイル・データベース・cron・秘密情報へ触れません。
-- 本番デプロイを勝手に実行しません。
+- AI agent（Claude Code、Codex、ChatGPTその他の自動実行主体）は、XServerを含むいかなるremote hostに対しても`ssh` / `scp` / `sftp` / remote shellを伴う`rsync`等を実行しません。利用者からremote環境での調査・測定・作業を依頼された場合でも、AI agentが直接接続する許可とは解釈しません。
+- AI agentは、既存の`~/.ssh`、SSH private key、`ssh-agent`、`SSH_AUTH_SOCK`、ControlMaster socket、SSH config等のローカルSSH認証資材を、remote接続のために参照・利用しません。既存認証情報が利用可能であること自体を接続許可とみなしません。
+- remote環境で必要な操作は、AI agentが実行コマンドと確認観点を提示し、利用者が自分でSSH接続して実行します。AI agentは、利用者から秘密値や本番固有値を除いた実行結果を受け取って次の判断を行います。
+- 一時SSH鍵が必要な場合も、AI agentは作成・登録・使用・削除を直接行いません。必要な手順とコマンドを利用者へ提示し、鍵の生成、XServer側への公開鍵登録、接続、失効・削除は利用者が実行します。
+- AI agentはSSH鍵、`authorized_keys`、known_hosts、SSH configその他の認証・接続設定を変更・削除・ローテーションしません。変更が必要な場合は理由と手順を提示し、利用者が実行します。
+- 利用者の明示的な指示がない限り、XServer本番環境のファイル・データベース・cron・秘密情報へ触れません。本番デプロイを勝手に実行しません。
+- 実secretを含む`.env`等のファイルについて、AI agentが値を推測・補正・自己修復して書き換えることを禁止します。形式不正や読み込み失敗を検知した場合は、秘密値を表示せずに作業を止め、利用者が安全に作り直せるコマンドを提示します。
+- 本番ホスト名、SSH接続先、アカウント名、実ドメイン、アカウント固有または配置固有の絶対パス（home配下のパス、実際の配置ディレクトリ等）その他の本番固有値をPublicなIssue、PR、commit message、テスト、ログへ記録しません。検証結果をGitHubへ残す場合は、本番固有値を一般化・伏字化してから記録します。
+- XServerプラットフォーム上で全アカウント共通のruntimeパス（例: `/opt/php-8.5.5/bin/php`）は、アカウント・配置・接続先を特定しないため、この禁止対象に含めません。README・`docs/production-environment.md`でも本番CLIの明示に使用しています。
 
 ## Public運用
 
