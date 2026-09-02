@@ -4,13 +4,13 @@
 
 JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXServerのレンタルサーバーへ配置する前提で構成しています。実行環境の調査結果は`BvlionBatch5`の`docs/production-environment.md`と共通です。
 
-本番ドメイン・本番`.env`・本番DB・cronへの配置・設定は行っていません。timeout実測（「本番timeout（`OPENAI_TIMEOUT_SECONDS`）の決定」）だけは、本番配置とは分離したアカウント内の検証専用ディレクトリで、本番の`public_html`・DB・cronに触れずに実施しました。以下は「この構成が将来そのまま載せられる」ことを示すための前提の記録です。
+Issue #13で、この構成のServer実装をXServer本番環境へ配置しました。本番ドメインをHTTPSで公開し、本番`.env`・本番DB（既存migration適用済み）・失効データ削除の5分Cronを設定しました。配置前のtimeout実測（「本番timeout（`OPENAI_TIMEOUT_SECONDS`）の決定」）は、本番配置とは分離したアカウント内の検証専用ディレクトリで、本番の`public_html`・DB・cronに触れずに実施したものです。
 
-ここに記載するのは実行環境そのものの制約だけです。`BvlionBatch5`固有の運用判断（同プロジェクトが`/health`を作らないことなど）は、JournalingPostServerの制約として持ち込みません。
+ここに記載するのは実行環境そのものの制約と、Issue #13で確認した配置後の状態です。`BvlionBatch5`固有の運用判断（同プロジェクトが`/health`を作らないことなど）は、JournalingPostServerの制約として持ち込みません。
 
 ## PHP
 
-- HTTP実行環境ではPHP 8.5系を使用する。
+- HTTP実行環境ではPHP 8.5系を使用する（本番サーバーパネルで 8.5.9 を確認済み）。
 - CLIでは`/opt/php-8.5.5/bin/php`を明示して実行する。CLIの既定PHPは古い版を参照するため使用しない。
 - `composer.json`の`config.platform.php`を`8.5.5`に固定し、ローカルで解決する依存関係が本番PHPと乖離しないようにする。
 
@@ -50,8 +50,8 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 
 - `.htaccess`とRewriteを利用できる。
 - `Authorization`ヘッダーは追加設定なしではPHPへ到達しない。`public/.htaccess`のRewriteで`HTTP_AUTHORIZATION`へ転送する。これはHosted APIの匿名installation認証（`Authorization: Bearer <API key>`）の前提である。
-- 転送値は`index.php`への内部リダイレクトを経て`REDIRECT_HTTP_AUTHORIZATION`として届くことがある。`public/index.php`が両方を受け取れるようにしている。本番配置後は、`POST /v1/analyses`が`401 unauthorized`にならないことで転送が効いているか確認できる。
-- Hosted APIはHTTPSでのみ提供する。Bearer API keyとJournalEntry本文が平文で流れないようにするためである。XServerの無料独自SSLでドメインにHTTPSを有効化する。`public/.htaccess`は平文HTTPのrequestをHTTPSへリダイレクトせず、Apache側で拒否する（`%{HTTPS}`が`on`でなければ`403`）。リダイレクトしてもrequestに含むBearer API keyとJournalEntry本文は既に平文で送信済みであり、AndroidもHTTPからのリダイレクト追従を行わず最初からHTTPSへ直接接続する（[Hosted解析API契約](hosted-analysis-api.md)）。配置時に、平文HTTPの`POST /v1/analyses`が処理されず拒否されることを確認する。
+- 転送値は`index.php`への内部リダイレクトを経て`REDIRECT_HTTP_AUTHORIZATION`として届くことがある。`public/index.php`が両方を受け取れるようにしている。Issue #13の本番配置後smoke testで、Bearer認証した`POST /v1/analyses`が`401 unauthorized`にならず`200`を返すことを確認し、Apache経由の`Authorization`転送が成立している。
+- Hosted APIはHTTPSでのみ提供する。Bearer API keyとJournalEntry本文が平文で流れないようにするためである。XServerの無料独自SSLでドメインにHTTPSを有効化する。`public/.htaccess`は平文HTTPのrequestをHTTPSへリダイレクトせず、Apache側で拒否する（`%{HTTPS}`が`on`でなければ`403`）。リダイレクトしてもrequestに含むBearer API keyとJournalEntry本文は既に平文で送信済みであり、AndroidもHTTPからのリダイレクト追従を行わず最初からHTTPSへ直接接続する（[Hosted解析API契約](hosted-analysis-api.md)）。Issue #13の本番配置後smoke testで、平文HTTPのHosted requestが処理されず`403`で拒否されることを確認した。
 
 ## 外部通信（OpenAI）
 
@@ -59,7 +59,7 @@ JournalingPostServerは、`BvlionBatch5`・`holidays-webhook-server`と同じXSe
 - 呼び出しはcurlで行い、OpenAI SDKは追加しない（`composer.json`の`ext-curl`）。TLSは必須で、平文HTTPへのリダイレクト追従はしない。
 - `.env`に`OPENAI_API_KEY`（OpenAIのAPI key）と`OPENAI_TIMEOUT_SECONDS`（呼び出しのtimeout秒数、正の整数。実測により `45`）を設定する。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合、HTTPアプリ（`bootstrap/config.php`）は秘密値を含めずに起動を失敗させる。DBだけを使うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）はこれらを検証しない（「Cron」参照）。
 - `OPENAI_API_KEY`の実値はリポジトリ・Issue・PR・デプロイログ・通常ログ・例外メッセージ・error responseへ出さない。
-- `store: false`はServerが後からResponseを取得しないための設定であり、OpenAI側の全データ保持をゼロにする設定ではない。標準のAPI利用ではabuse monitoring logsにprompt / responseが最大30日保持され得る（API input / outputはデフォルトではmodel学習に使われない）。`/v1/responses`はZero Data Retention（ZDR）対象だが、ZDRはOpenAIの承認・設定が必要で、現在の実装はZDR有効を前提にしない。ZDR未設定では対応modelのextended prompt cachingによるprovider側の一時的なapplication stateが存在し得る。詳細は[Hosted解析API契約](hosted-analysis-api.md)の「OpenAI側のデータ保持」。ZDRを有効化するかは配置時に判断する（未設定）。
+- `store: false`はServerが後からResponseを取得しないための設定であり、OpenAI側の全データ保持をゼロにする設定ではない。標準のAPI利用ではabuse monitoring logsにprompt / responseが最大30日保持され得る（API input / outputはデフォルトではmodel学習に使われない）。`/v1/responses`はZero Data Retention（ZDR）対象だが、ZDRはOpenAIの承認・設定が必要で、現在の実装はZDR有効を前提にしない。ZDR未設定では対応modelのextended prompt cachingによるprovider側の一時的なapplication stateが存在し得る。ZDRを有効化するかは今後の運用判断とする。詳細は[Hosted解析API契約](hosted-analysis-api.md)の「OpenAI側のデータ保持」。
 
 ### 本番timeout（`OPENAI_TIMEOUT_SECONDS`）の決定
 
@@ -72,7 +72,9 @@ XServer上の検証ディレクトリ（本番配置とは分離）で、PR #10�
 
 結論: 同期HTTPは成立する。`OPENAI_TIMEOUT_SECONDS = 45` の採用根拠は (1) 実OpenAI成功応答の実測最大が約4.3秒、(2) 少数サンプルで高パーセンタイル・時間帯変動を測れていないため十分な余裕をとる、の2点。web / FastCGI / front proxy の timeout は根拠に含めていない。Android read timeout推奨は 90 秒。
 
-web `max_execution_time`・front proxy の read timeout は read-only では確認できていない（CLI PHP は `max_execution_time = 0` だが API は web SAPI（FastCGI）で動く。web の値はサーバーパネルのPHP設定で管理され読めるファイルには無い）。本番配置前の前提条件として、**45秒の provider timeout ＋ request 処理の overhead を、web `max_execution_time`・front proxy・Android read timeout がすべて上回ること**を確認する。この条件を満たした場合にだけ、遅いケースで Server 側の `504` が外側の timeout より先に発火し claim を保持できる。配置後の smoke test で、実サイズの `POST /v1/analyses` が web request 内で完了し遅いケースで `504` が返ることも確認する。
+web `max_execution_time` は本番サーバーパネルで **30秒**（PHP 8.5.9 / `display_errors` OFF）。Issue #13 では 30秒 のまま維持した。Linux版PHPでは system call・stream operation・DB query 等の待機時間が `max_execution_time` の計測対象に含まれないため、OpenAI 呼び出し（curl / socket 待ち）や DB query の待機は 30秒 の対象外であり、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較して変更要否を判断しない。
+
+実HTTP経路の wall-clock 側の上限（XServer の Web / FastCGI / front proxy 制約）については、Issue #13 の本番配置後 smoke test で **通常の成功ケースが本番 web request 内で完了し、外側の timeout で先に切られないこと**を確認した。遅いケースで Server 側の `504`（claim 非解放）が外側 timeout より先に発火することの実証（意図的な provider timeout / fault injection）は、Issue #13 の完了条件には含めない。
 
 ## Cron
 
@@ -86,7 +88,7 @@ cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/pr
 ```
 
 - Cronの用途はこの削除だけである。ServerはPush予約やscheduler機能を持たない。
-- 本番Cronは未設定である。配置時に設定する。設定しない場合、解析結果本文が保持期間を越えてDBへ残る。
+- Issue #13 の本番配置で、この削除Cronを5分間隔で設定済みである。`bin/prune-expired-analyses.php` を本番DBへ接続して手動相当で実行し、正常終了することも確認した。
 
 ## 秘密情報
 
@@ -106,7 +108,5 @@ cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/pr
 
 ## 行っていないこと
 
-- 本番環境へのデプロイ、およびデプロイ自動化（`deploy.yaml`相当）
-- 本番の`public_html`・DB・cron・本番`.env`の変更（timeout実測は検証専用ディレクトリで実施）
-- XServerサーバーパネルでの web `max_execution_time` の確認・調整（配置前に実施する）
-- OpenAIアカウント側のZero Data Retention（ZDR）の申請・有効化
+- デプロイ自動化（`deploy.yaml`相当）。本番配置自体は Issue #13 で実施済み。
+- 意図的な provider timeout / fault injection の実証（遅いケースで Server 側 `504` が外側 timeout より先に発火することの確認。Issue #13 の完了条件外）
