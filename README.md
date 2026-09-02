@@ -239,6 +239,167 @@ make check-clean
 
 **Issue #13でこのServer実装をXServer本番環境へ配置しました。** 本番DBへ既存migrationを適用し、本番 `.env`（`DB_*` / `ANALYSIS_FINGERPRINT_SECRET` / `OPENAI_API_KEY` / `OPENAI_TIMEOUT_SECONDS=45`）を設定し、失効データ削除の5分Cronを設定しました。HTTPS経路で `POST /v1/installations` の201、Bearer認証した `POST /v1/analyses` の実OpenAI解析200、同一 `Idempotency-Key` 再送での初回と同一response、Apache経由の `Authorization` ヘッダー転送、平文HTTPの403拒否、`bin/prune-expired-analyses.php` の本番DB接続をServer単体smoke testで確認済みです。web SAPIは PHP 8.5.9 / `display_errors` OFF、`max_execution_time` は 30秒 のままです。Linux版PHPではcurl・stream・DB query等の待機時間が `max_execution_time` の計測対象に含まれないため、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較しません。通常の成功ケースが本番web request内で完了することは確認済みで、意図的なprovider timeout / fault injectionはIssue #13の完了条件に含めていません。timeout実測（`OPENAI_TIMEOUT_SECONDS = 45` の決定）は、配置前に本番と分離した検証専用ディレクトリで実施したものです。
 
+## 本番デプロイ
+
+`v*` 形式のGitタグ（例: `v1.0.0`）をpushすると、GitHub Actions（`.github/workflows/deploy.yaml`）がそのタグの指すcommitをXServer本番環境へデプロイします。`main` へのpushやPull Requestではデプロイされません。初回の環境構築（「初回デプロイ」節）は手動で行い、以降の更新デプロイは `v*` タグのpushだけで完了します。実行履歴はGitHub Actionsのrunとして残ります。
+
+### 配置の考え方
+
+- ドキュメントルート（`public_html`）には公開してよいファイルだけを置きます（`public/index.php` へのシンボリックリンクと `public/.htaccess` のコピー）。
+- アプリ本体は `public_html` 外の専用ディレクトリ（以下 `<app-directory>`）へ、**このpublic repositoryのgit checkout** として配置します。自動デプロイはこのcheckout上で `git fetch` と `git checkout --detach` を行い、タグの指すcommitへ切り替えます。実行時点の `origin/main` は使いません。
+- `.env` と解析指示本文ファイル（既定 `config/analysis-instruction.txt`）はGit管理対象外です。`git checkout` はこれらのuntrackedファイルに触れないため、デプロイで失われません。`OPENAI_API_KEY` や `ANALYSIS_FINGERPRINT_SECRET` を含む `.env` の中身をworkflowは一切変更しません。
+- 解析指示本文だけは、GitHub Secret `ANALYSIS_INSTRUCTION` に保持した本文をデプロイのたびに実行時ファイルへ書き戻します。Secretの搬送形式（Actions→SSH間はbase64）とその復元はdeploy側の責務で、アプリはSecretを直接扱いません（「環境設定」節）。
+
+### 初回デプロイ
+
+1. `<app-directory>` を作成し、このリポジトリをcloneします。
+
+    ```shell
+    mkdir -p <app-directory>
+    cd <app-directory>
+    git clone https://github.com/bvlion/JournalingPostServer.git .
+    ```
+
+    Issue #13の手動配置で `<app-directory>` に既にファイルがある場合は、その場でgit管理下へ移します（既存の `.env` ・ `config/analysis-instruction.txt` はtracked対象外なので残ります）。
+
+    ```shell
+    cd <app-directory>
+    git init
+    git remote add origin https://github.com/bvlion/JournalingPostServer.git
+    git fetch origin
+    git checkout -f main
+    ```
+
+2. 専用のComposerを、検証済みチェックサムで非公開ツールディレクトリへ配置します（共有Composerは使用・更新しない）。ツールディレクトリの絶対パスは、貼り付け後の対話プロンプトで入力します。
+
+    ```shell
+    (
+        set -euo pipefail
+
+        read -rp "Composerを配置する専用ツールディレクトリの絶対パスを入力してEnter: " TOOLS_DIRECTORY
+        mkdir -p "$TOOLS_DIRECTORY"
+        cd "$TOOLS_DIRECTORY"
+
+        COMPOSER_SETUP_FILE="composer-setup.php"
+        trap 'rm -f "$COMPOSER_SETUP_FILE"' EXIT
+
+        EXPECTED_SIGNATURE="$(/opt/php-8.5.5/bin/php -r "echo file_get_contents('https://composer.github.io/installer.sig');")"
+        if [ -z "$EXPECTED_SIGNATURE" ]; then
+            echo 'ERROR: Could not retrieve the expected Composer installer signature.' >&2
+            exit 1
+        fi
+
+        if ! /opt/php-8.5.5/bin/php -r "exit(copy('https://getcomposer.org/installer', '$COMPOSER_SETUP_FILE') ? 0 : 1);"; then
+            echo 'ERROR: Could not download the Composer installer.' >&2
+            exit 1
+        fi
+
+        ACTUAL_SIGNATURE="$(/opt/php-8.5.5/bin/php -r "echo hash_file('sha384', '$COMPOSER_SETUP_FILE');")"
+        if [ "$EXPECTED_SIGNATURE" != "$ACTUAL_SIGNATURE" ]; then
+            echo 'ERROR: Composer installer signature mismatch.' >&2
+            exit 1
+        fi
+
+        /opt/php-8.5.5/bin/php "$COMPOSER_SETUP_FILE" --install-dir="$TOOLS_DIRECTORY" --filename=composer.phar
+    )
+    ```
+
+3. 本番用の依存関係をインストールします（開発用を含めず `composer.lock` どおり）。`<tools-directory>` は手順2で入力したパスと同じにします。
+
+    ```shell
+    cd <app-directory>
+    /opt/php-8.5.5/bin/php <tools-directory>/composer.phar install --no-dev --optimize-autoloader --classmap-authoritative
+    ```
+
+4. `.env` を配置します。`.env.example` をコピーし「環境設定」節に従って本番値を設定します。
+
+    ```shell
+    cp .env.example .env
+    chmod 600 .env
+    ```
+
+5. 解析指示本文ファイルを配置します。自動デプロイがここをGitHub Secret `ANALYSIS_INSTRUCTION` の本文で毎回上書きするため、内容は初回にダミーでも構いませんが、ファイル自体は必要です。既定パスは `<app-directory>/config/analysis-instruction.txt`。
+
+    ```shell
+    cp config/analysis-instruction.example.txt config/analysis-instruction.txt
+    chmod 600 config/analysis-instruction.txt
+    ```
+
+    `.env` と並べた別パスへ置く場合は、`.env` の `ANALYSIS_INSTRUCTION_FILE` にそのパスを設定し、後述の `DEPLOY_INSTRUCTION_PATH` Secretも同じパスにします。
+
+6. `public_html` 側に公開ファイルを配置します（`index.php` はシンボリックリンク、`.htaccess` は通常ファイル）。
+
+    ```shell
+    ln -s <app-directory>/public/index.php <public_html-directory>/index.php
+    cp <app-directory>/public/.htaccess <public_html-directory>/.htaccess
+    ```
+
+7. 権限を設定します（ディレクトリ755 / ファイル644 / `.env` と解析指示本文ファイルは600が目安。実行ユーザーに合わせて調整）。
+
+8. マイグレーションを適用します。
+
+    ```shell
+    /opt/php-8.5.5/bin/php bin/migrate.php
+    ```
+
+9. 疎通確認します（「疎通確認」節）。
+
+    ```shell
+    bin/check-deploy-connectivity.sh https://<domain>
+    ```
+
+### 自動デプロイ（`v*` タグpush）
+
+`v*` 形式のタグをpushすると、`.github/workflows/deploy.yaml` が次を実行します（本番ホスト側の処理は `bin/deploy-remote.sh`）。
+
+1. 本番 `<app-directory>` にtracked変更が無いことを確認します。ある場合は上書き・resetせずデプロイを失敗させます。
+2. pushされたタグをfetchし、そのタグが最終的に指すcommit（annotated / lightweightのいずれでも同じ）へ本番checkoutを `git checkout --detach` で切り替えます。
+3. GitHub Secret `ANALYSIS_INSTRUCTION` の解析指示本文を、`DEPLOY_INSTRUCTION_PATH` の実行時ファイルへ平文で書き戻します。1行目（system prompt）または分析ルール本文が空なら失敗させます。内容はデプロイログへ出しません。
+4. 専用Composerと `/opt/php-8.5.5/bin/php` で `composer install --no-dev --optimize-autoloader --classmap-authoritative` を実行します。
+5. `/opt/php-8.5.5/bin/php bin/migrate.php` で未適用マイグレーションを適用します。
+6. `<app-directory>/public/.htaccess` を `public_html` 側へ上書きコピーします。`index.php` のシンボリックリンクは初回作成時のものを再利用します。
+7. `bin/check-deploy-connectivity.sh` で未認証の `POST /v1/analyses` が401、未定義パスへのGETが404であることを確認します。1件でも異なればworkflow全体を失敗させます。
+
+本番の `.env` はworkflowから作成・コピー・上書き・削除しません。SSHの秘密鍵・接続先・絶対パス・本番URL・解析指示本文は、いずれもGitHub Secretsから取得し、リポジトリへは記録しません。同一本番環境への同時デプロイは `concurrency` グループで直列化します。SSH host key verificationは `DEPLOY_SSH_KNOWN_HOSTS` を使い必ず有効にし、`StrictHostKeyChecking=no` 等での無効化は行いません。
+
+#### 通常のリリース手順
+
+CIを通過した `main` のcommitへタグを作成してpushするだけで、そのcommitがそのまま本番へ反映されます。
+
+```shell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+#### 必要なGitHub Secrets
+
+| Secret | 用途 |
+| --- | --- |
+| `DEPLOY_SSH_HOST` | XServerのSSH接続先ホスト |
+| `DEPLOY_SSH_PORT` | SSH接続ポート |
+| `DEPLOY_SSH_USER` | SSH接続ユーザー名 |
+| `DEPLOY_SSH_PRIVATE_KEY` | デプロイ専用のSSH秘密鍵 |
+| `DEPLOY_SSH_KNOWN_HOSTS` | 接続先のhost keyを検証するknown_hostsエントリ |
+| `DEPLOY_PATH` | 本番アプリ本体（`<app-directory>`）の絶対パス |
+| `DEPLOY_COMPOSER_PATH` | 本番に配置済みの専用 `composer.phar` の絶対パス |
+| `DEPLOY_PUBLIC_PATH` | 公開ディレクトリ（`public_html`）の絶対パス |
+| `DEPLOY_INSTRUCTION_PATH` | 解析指示本文を書き戻す実行時ファイルの絶対パス（既定運用では `<app-directory>/config/analysis-instruction.txt`） |
+| `ANALYSIS_INSTRUCTION` | OpenAIへ送る解析指示本文（プレーンテキスト。1行目 = system prompt、2行目以降 = 分析ルール本文） |
+| `DEPLOY_BASE_URL` | デプロイ後の未認証疎通確認に使う本番URL（例: `https://<domain>`） |
+
+#### 初回設定（もちおさん側の作業）
+
+1. デプロイ専用のSSH鍵ペアを作成し、公開鍵をXServer側の対象アカウントの `~/.ssh/authorized_keys` へ登録します。
+2. 上記「初回デプロイ」を実施し、`<app-directory>` をgit checkoutとして用意します。
+3. 上記の必要なGitHub Secretsをすべて登録します（値の作り方は本節末尾の手順を参照）。
+4. `v*` 形式のタグを作成・pushし、GitHub Actionsのデプロイが成功することを確認します。
+
+### ロールバック
+
+- **アプリコード**: 直前の安定タグへ戻すため、その安定commitに新しい `v*` タグ（例: `v1.0.1`）を付けてpushし、通常の自動デプロイで反映します。緊急時は本番 `<app-directory>` で直接 `git checkout --detach <安定commit>` → その時点の `composer.lock` で `composer install` を再実行します。
+- **マイグレーション**: `bin/migrate.php` にロールバックはありません。データベースのバックアップからの復元、または追加のマイグレーションで是正し、適用済みファイルは変更しません。
+- **公開停止**: `public_html/index.php` のシンボリックリンクを外すか、`.htaccess` を退避すれば公開を止められます。
+
 ## 未実装のもの
 
 次はいずれも未実装で、後続Issueで扱います。
@@ -247,4 +408,3 @@ make check-clean
 - `/health`（作るかどうか未決定）
 - account / profile、timezone、recurrence、entitlement、広告
 - 非同期job queue、Cloud Functions / Cloud Run
-- デプロイ自動化（本番配置自体はIssue #13で実施済み）

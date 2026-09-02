@@ -41,7 +41,7 @@ Issue #13で、この構成のServer実装をXServer本番環境へ配置しま�
 ## 配置構成
 
 - ドメインのドキュメントルートは、当該ドメインの`public_html`ディレクトリである。
-- アプリ本体（`bootstrap`・`src`・`bin`・`database`・`vendor`・`composer.*`・`.env`）は、アカウントホーム配下かつドキュメントルート外の専用ディレクトリへ配置する。
+- アプリ本体（`bootstrap`・`src`・`bin`・`database`・`vendor`・`composer.*`・`.env`）は、アカウントホーム配下かつドキュメントルート外の専用ディレクトリへ配置する。このディレクトリはpublic repository（`https://github.com/bvlion/JournalingPostServer.git`）のgit checkoutであり、`v*`タグpushの自動デプロイはこのcheckout上で`git fetch` + `git checkout --detach`を行う（`README.md`「本番デプロイ」）。`.env`と解析指示本文ファイルはGit管理対象外のため、`git checkout`では失われない。
 - 解析指示本文は実行時のプレーンテキストファイル（既定 `config/analysis-instruction.txt`）から読む。`.env` と同じ非公開ディレクトリへ置く（`ANALYSIS_INSTRUCTION_FILE` で `.env` と並べた別パスも指定できる）。旧 `.php` 形式も含めて Git 管理対象外。`config/analysis-instruction.example.txt` は架空値のひな形で、実データを含まない。
 - ドキュメントルートへ配置するのは、`public/index.php`へのシンボリックリンクと、`public/.htaccess`をコピーした通常ファイルだけである。
 - ドキュメントルート内のシンボリックリンク経由でも、PHPの`__DIR__`は実体側のディレクトリで解決されるため、`public/index.php`はコード変更なしで利用できる。
@@ -77,6 +77,15 @@ web `max_execution_time` は本番サーバーパネルで **30秒**（PHP 8.5.9
 
 実HTTP経路の wall-clock 側の上限（XServer の Web / FastCGI / front proxy 制約）については、Issue #13 の本番配置後 smoke test で **通常の成功ケースが本番 web request 内で完了し、外側の timeout で先に切られないこと**を確認した。遅いケースで Server 側の `504`（claim 非解放）が外側 timeout より先に発火することの実証（意図的な provider timeout / fault injection）は、Issue #13 の完了条件には含めない。
 
+## SSHとデプロイ
+
+- XServerはSSH接続を利用できる。デプロイ専用のSSH鍵ペアを1つ作成し、公開鍵を対象アカウントの`~/.ssh/authorized_keys`へ登録する。
+- `v*`形式のタグをpushすると、GitHub Actions（`.github/workflows/deploy.yaml`）がこの鍵でXServerへSSH接続し、本番checkoutをタグの指すcommitへ切り替える。実行内容は`bin/deploy-remote.sh`（tracked変更の確認 → タグfetch → `git checkout --detach` → 解析指示本文の復元 → `composer install --no-dev` → `bin/migrate.php` → `public/.htaccess`反映）。
+- SSH接続情報・絶対パス・本番URL・解析指示本文はすべてGitHub Secretsに置き、リポジトリ・Issue・PR・デプロイログへ記録しない。必要なSecretの一覧は`README.md`「必要なGitHub Secrets」。
+- 秘密値はSSHのコマンドライン引数へ載せず、標準入力経由でリモートシェルへ渡す（リモートホストの`ps`へ現れないようにするため）。host key検証は`DEPLOY_SSH_KNOWN_HOSTS`で常に有効にし、`StrictHostKeyChecking=no`等での無効化はしない。
+- 同一本番環境への同時デプロイはworkflowの`concurrency`グループで直列化する。
+- AI agentはこのSSH接続を行わない（`AGENTS.md`「本番環境・SSHの安全ルール」）。鍵の生成・登録、Secret登録、初回デプロイ、タグpushはいずれも利用者が実行する。
+
 ## Cron
 
 - XServer Cronを利用できる。
@@ -95,7 +104,7 @@ cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/pr
 
 - `.env`はドキュメントルート外のアプリ本体ディレクトリへ置き、Web経由で読めない位置に配置する。解析指示本文ファイル（`config/analysis-instruction.txt`）も同様に配置する。
 - `OPENAI_API_KEY`はOpenAI Responses APIのAPI keyである。実際の値はリポジトリ・Issue・PR・デプロイログへ記録しない。
-- OpenAIへ送る解析指示本文（system promptと分析ルール本文）は非公開値である。GitHub Secretにはprompt本文だけを保持する（PHPコードやファイル全体は入れない）。deploy時にSecretの本文を実行環境の`config/analysis-instruction.txt`（または`ANALYSIS_INSTRUCTION_FILE`のパス）へプレーンテキストで復元する。Secretの保管形式（base64等）とその復元はdeploy側の責務で、アプリはSecretを直接扱わない。実際の内容はリポジトリ・Issue・PR・デプロイログ・通常ログ・error responseへ記録しない。ファイルが無い・分析ルール本文が無い場合は、内容を出力せずに起動を失敗させる。
+- OpenAIへ送る解析指示本文（system promptと分析ルール本文）は非公開値である。GitHub Secret `ANALYSIS_INSTRUCTION` にprompt本文だけを保持する（PHPコードやファイル全体は入れない）。`v*`タグpushの自動デプロイ（`bin/deploy-remote.sh`）が、この本文を実行環境の`config/analysis-instruction.txt`（`DEPLOY_INSTRUCTION_PATH` Secret。`ANALYSIS_INSTRUCTION_FILE`と揃える）へプレーンテキストで復元する。Actions→SSH間はbase64で搬送するが、アプリはSecretも搬送形式も扱わない。1行目または分析ルール本文が空ならデプロイを失敗させる。実際の内容はリポジトリ・Issue・PR・デプロイログ・通常ログ・error responseへ記録しない。ファイルが無い・分析ルール本文が無い場合は、内容を出力せずに起動を失敗させる。
 - `OPENAI_TIMEOUT_SECONDS`は秘密値ではない。実測により `45`（「外部通信（OpenAI）」参照）。
 - `ANALYSIS_FINGERPRINT_SECRET`は解析requestのfingerprintを鍵付きにするための秘密値である。32文字以上のランダム値を1度だけ生成し、本番deployを跨いで同じ値を使う。`/opt/php-8.5.5/bin/php -r 'echo base64_encode(random_bytes(48)), PHP_EOL;'`などで生成する。
 - この値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になる。無停止で入れ替える手順は用意していないため、必要な場合は影響が保持期間内に収まることを前提に行う。
@@ -110,5 +119,5 @@ cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/pr
 
 ## 行っていないこと
 
-- デプロイ自動化（`deploy.yaml`相当）。本番配置自体は Issue #13 で実施済み。
 - 意図的な provider timeout / fault injection の実証（遅いケースで Server 側 `504` が外側 timeout より先に発火することの確認。Issue #13 の完了条件外）
+- AI agent による本番環境への接続・デプロイ実行。デプロイ機構の実装と `make check` までの検証はrepository側で行い、鍵の生成・Secret登録・初回デプロイ・タグpushは利用者が実行する（`AGENTS.md`）。

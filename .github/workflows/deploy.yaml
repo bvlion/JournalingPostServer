@@ -1,0 +1,95 @@
+name: Production Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+# 同一本番環境（XServer）への同時デプロイを防ぐため、タグ名に関わらず固定の
+# concurrency group を共有する。cancel-in-progress: false により実行中の
+# デプロイを打ち切らず、後続の run はキューされて 1 つずつ順に実行される。
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # actions/checkout 後の HEAD を、デプロイ対象 commit として確定する。
+      # bin/deploy-remote.sh は本番ホスト側で解決したタグの commit がこの値と
+      # 一致することを確認してから checkout を切り替える。
+      - name: Resolve target commit
+        id: resolve
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up SSH
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+
+      # 秘密値（SSH 接続情報・解析指示本文）はすべて標準入力経由でリモートシェルへ
+      # 渡し、SSH のコマンドライン引数には一切載せない。リモートホストのプロセス
+      # 一覧（ps）へ現れないようにするため。解析指示本文は base64 で 1 行にして
+      # 搬送し、bin/deploy-remote.sh が実行時ファイルへ平文で書き戻す。
+      # 実行するデプロイ手順は bin/deploy-remote.sh を参照。
+      - name: Deploy to production
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_COMPOSER_PATH: ${{ secrets.DEPLOY_COMPOSER_PATH }}
+          DEPLOY_PUBLIC_PATH: ${{ secrets.DEPLOY_PUBLIC_PATH }}
+          DEPLOY_INSTRUCTION_PATH: ${{ secrets.DEPLOY_INSTRUCTION_PATH }}
+          ANALYSIS_INSTRUCTION: ${{ secrets.ANALYSIS_INSTRUCTION }}
+          TAG_NAME: ${{ github.ref_name }}
+          EXPECTED_COMMIT: ${{ steps.resolve.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$ANALYSIS_INSTRUCTION" ]; then
+            echo "Deploy aborted: the ANALYSIS_INSTRUCTION secret is unset or empty." >&2
+            exit 1
+          fi
+
+          {
+            printf 'DEPLOY_PATH=%q\n' "$DEPLOY_PATH"
+            printf 'DEPLOY_COMPOSER_PATH=%q\n' "$DEPLOY_COMPOSER_PATH"
+            printf 'DEPLOY_PUBLIC_PATH=%q\n' "$DEPLOY_PUBLIC_PATH"
+            printf 'DEPLOY_INSTRUCTION_PATH=%q\n' "$DEPLOY_INSTRUCTION_PATH"
+            printf 'ANALYSIS_INSTRUCTION_B64=%q\n' "$(printf '%s' "$ANALYSIS_INSTRUCTION" | base64 | tr -d '\n')"
+            printf 'TAG_NAME=%q\n' "$TAG_NAME"
+            printf 'EXPECTED_COMMIT=%q\n' "$EXPECTED_COMMIT"
+            cat bin/deploy-remote.sh
+          } | ssh \
+              -i "$HOME/.ssh/deploy_key" \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -o StrictHostKeyChecking=yes \
+              -o IdentitiesOnly=yes \
+              -p "$DEPLOY_SSH_PORT" \
+              "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
+              bash -s
+
+      - name: Unauthenticated connectivity check
+        env:
+          DEPLOY_BASE_URL: ${{ secrets.DEPLOY_BASE_URL }}
+        run: bin/check-deploy-connectivity.sh
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f "$HOME/.ssh/deploy_key"
