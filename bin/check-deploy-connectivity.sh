@@ -34,7 +34,12 @@ FAILED=0
 check() {
     local method="$1" path="$2" expected="$3"
     local status
-    status="$(curl -sS -o /dev/null -w '%{http_code}' -X "${method}" "${BASE_URL}${path}")"
+    # 転送全体に上限を課す。接続後に応答が返らない場合でも有限時間で
+    # 失敗として完了し、呼び出し側（deploy.yaml の後続 rollback step など）が
+    # 進めるようにする。curl は失敗時に %{http_code} として 000 を出力する。
+    status="$(curl -sS -o /dev/null -w '%{http_code}' \
+        --connect-timeout 10 --max-time 20 \
+        -X "${method}" "${BASE_URL}${path}" || true)"
 
     if [ "${status}" = "${expected}" ]; then
         echo "OK  ${status} ${method} ${path}"

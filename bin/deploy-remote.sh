@@ -16,6 +16,8 @@
 #     shared/.env               恒久的な秘密設定。デプロイでは touch しない
 #     releases/<tag>/           タグごとの完成リリース（git checkout + vendor 等）
 #     current -> releases/<tag> 公開中リリースへの symlink（初回デプロイ前は無い）
+#     previous -> releases/<tag> 直前まで稼働していたリリースへの symlink
+#                               （rollback の既定の戻し先。初回デプロイ前は無い）
 #
 # 呼び出し側が実行前に export する環境変数（値は argv から取らないため
 # リモートホストの `ps` に現れない）:
@@ -54,6 +56,9 @@ REPO_DIR="$DEPLOY_ROOT/repo"
 RELEASES_DIR="$DEPLOY_ROOT/releases"
 SHARED_ENV="$DEPLOY_ROOT/shared/.env"
 CURRENT_LINK="$DEPLOY_ROOT/current"
+# このデプロイ開始時点で稼働していたリリースを指す symlink。切替の直前に
+# 記録し、bin/rollback-release.sh の既定の戻し先（自動 rollback を含む）として使う。
+PREVIOUS_LINK="$DEPLOY_ROOT/previous"
 
 for required_path in "$REPO_DIR/.git" "$RELEASES_DIR" "$SHARED_ENV"; do
     if [ ! -e "$required_path" ]; then
@@ -91,12 +96,15 @@ if [ -L "$CURRENT_LINK" ] && [ -d "$CURRENT_LINK" ]; then
         exit 1
     fi
 
-    # concurrency は同時実行を防ぐだけで FIFO 順は保証しない。稼働中より古い
-    # （= 稼働中 commit の祖先。同一を含む）タグのデプロイはここで拒否し、
-    # 遅れて実行された古いタグで本番が巻き戻らないようにする。直前リリースへ
-    # 戻すのは bin/rollback-release.sh（公開先の symlink だけを戻す）。
-    if git -C "$REPO_DIR" merge-base --is-ancestor "$NEW_COMMIT" "$LIVE_COMMIT"; then
-        echo "Deploy aborted: tag ${TAG_NAME} is not newer than the currently deployed release. Use bin/rollback-release.sh to move back to an earlier release." >&2
+    # 通常のリリース更新は、稼働中リリースを必ず含んで前進する。稼働中 commit が
+    # 新 commit の祖先である（= 新 commit が稼働中の子孫）ことを必須にする。
+    # これで「稼働中より古いタグ」も「main へは入っているが稼働中と分岐した
+    # タグ」（比較不能）も拒否され、既存変更が本番から欠落しない。concurrency は
+    # 同時実行を防ぐだけで FIFO 順を保証しないため、遅れて実行された古い／分岐
+    # タグでの巻き戻りをここで止める。意図的な過去リリースへの復帰は
+    # bin/rollback-release.sh（公開先の symlink だけを戻す）で行う。
+    if ! git -C "$REPO_DIR" merge-base --is-ancestor "$LIVE_COMMIT" "$NEW_COMMIT"; then
+        echo "Deploy aborted: tag ${TAG_NAME} does not build on the currently deployed release (older or diverged commit). Use bin/rollback-release.sh to move to an earlier release." >&2
         exit 1
     fi
 fi
@@ -147,6 +155,14 @@ fi
 ( cd "$RELEASE_DIR" && "$PHP_BIN" bin/check-config.php )
 
 # --- 公開先を原子的に切り替える --------------------------------------------
+# 切替の直前に、いま稼働しているリリースを previous として記録する。以降の
+# rollback（自動・手動の既定）は mtime 推測ではなくこの記録へ戻す。
+if [ -n "$PREVIOUS_RELEASE" ]; then
+    PREV_TMP="$DEPLOY_ROOT/.previous.$$"
+    ln -s "$PREVIOUS_RELEASE" "$PREV_TMP"
+    mv -T "$PREV_TMP" "$PREVIOUS_LINK"
+fi
+
 cp "$RELEASE_DIR/public/.htaccess" "$DEPLOY_PUBLIC_PATH/.htaccess"
 
 SWITCH_TMP="$DEPLOY_ROOT/.current.$$"
@@ -176,8 +192,12 @@ if [ -n "${DEPLOY_BASE_URL:-}" ]; then
     fi
 fi
 
-# --- 古いリリースを整理する（current は必ず残す）--------------------------
+# --- 古いリリースを整理する（current と previous は必ず残す）--------------
 CURRENT_TARGET="$(cd "$CURRENT_LINK" && pwd -P)"
+PREVIOUS_TARGET=""
+if [ -L "$PREVIOUS_LINK" ] && [ -d "$PREVIOUS_LINK" ]; then
+    PREVIOUS_TARGET="$(cd "$PREVIOUS_LINK" && pwd -P)"
+fi
 release_index=0
 while IFS= read -r release_dir; do
     [ -n "$release_dir" ] || continue
@@ -186,7 +206,8 @@ while IFS= read -r release_dir; do
     if [ "$release_index" -le "$KEEP_RELEASES" ]; then
         continue
     fi
-    if [ "$(cd "$release_dir" && pwd -P)" = "$CURRENT_TARGET" ]; then
+    resolved="$(cd "$release_dir" && pwd -P)"
+    if [ "$resolved" = "$CURRENT_TARGET" ] || [ "$resolved" = "$PREVIOUS_TARGET" ]; then
         continue
     fi
     rm -rf "$release_dir"

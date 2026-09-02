@@ -41,7 +41,7 @@ Issue #13で、この構成のServer実装をXServer本番環境へ配置しま�
 ## 配置構成
 
 - ドメインのドキュメントルートは、当該ドメインの`public_html`ディレクトリである。
-- アカウントホーム配下かつドキュメントルート外に、デプロイ専用ルート`<deploy-root>`を1つ置く。構成は`<deploy-root>/repo`（public repository `https://github.com/bvlion/JournalingPostServer.git` のgit clone）、`<deploy-root>/shared/.env`（恒久的な秘密設定）、`<deploy-root>/releases/<tag>/`（タグごとの完成リリース。`bootstrap`・`src`・`bin`・`database`・`vendor`・`composer.*`・`.env` symlink・解析指示本文ファイルを含む）、`<deploy-root>/current`（公開中リリースへのsymlink）。詳細は`README.md`「本番デプロイ」。
+- アカウントホーム配下かつドキュメントルート外に、デプロイ専用ルート`<deploy-root>`を1つ置く。構成は`<deploy-root>/repo`（public repository `https://github.com/bvlion/JournalingPostServer.git` のgit clone）、`<deploy-root>/shared/.env`（恒久的な秘密設定）、`<deploy-root>/releases/<tag>/`（タグごとの完成リリース。`bootstrap`・`src`・`bin`・`database`・`vendor`・`composer.*`・`.env` symlink・解析指示本文ファイルを含む）、`<deploy-root>/current`（公開中リリースへのsymlink）、`<deploy-root>/previous`（直前のデプロイ開始時に稼働していたリリースへのsymlink。rollbackの既定の戻し先）。詳細は`README.md`「本番デプロイ」。
 - `v*`タグpushの自動デプロイは、新しい`releases/<tag>/`を完成させてから`current`を原子的に切り替える。`shared/.env`はデプロイが読み書きせず、各リリースへ`.env` symlinkとして貼るだけ。
 - 解析指示本文は実行時のプレーンテキストファイル（既定 `config/analysis-instruction.txt`）から読む。デプロイが各リリース内のこのパスへ GitHub Secret から復元する。旧 `.php` 形式も含めて Git 管理対象外。`config/analysis-instruction.example.txt` は架空値のひな形で、実データを含まない。
 - ドキュメントルートへ配置するのは、`<deploy-root>/current/public/index.php`へのシンボリックリンクと、そこからコピーした`public/.htaccess`の通常ファイルだけである。
@@ -81,11 +81,11 @@ web `max_execution_time` は本番サーバーパネルで **30秒**（PHP 8.5.9
 ## SSHとデプロイ
 
 - XServerはSSH接続を利用できる。デプロイ専用のSSH鍵ペアを1つ作成し、公開鍵を対象アカウントの`~/.ssh/authorized_keys`へ登録する。
-- `v*`形式のタグをpushすると、GitHub Actions（`.github/workflows/deploy.yaml`）がこの鍵でXServerへSSH接続し、`bin/deploy-remote.sh`を実行する。処理は「新`releases/<tag>/`をclone → `shared/.env` symlink → 解析指示本文をSecretから復元 → `composer install --no-dev` → `bin/migrate.php` → `bin/check-config.php`で起動検証 → `public/.htaccess`反映 → `current`を原子的に切替 → 切替後スモークチェック（失敗時は直前リリースへ自動復帰） → 古いリリースを整理」。
+- `v*`形式のタグをpushすると、GitHub Actions（`.github/workflows/deploy.yaml`）がこの鍵でXServerへSSH接続し、`bin/deploy-remote.sh`を実行する。処理は「新`releases/<tag>/`をclone → `shared/.env` symlink → 解析指示本文をSecretから復元 → `composer install --no-dev` → `bin/migrate.php` → `bin/check-config.php`で起動検証 → 稼働中リリースを`previous`へ記録 → `public/.htaccess`反映 → `current`を原子的に切替 → 切替後スモークチェック（失敗時は`previous`へ自動復帰） → 古いリリースを整理（`current`と`previous`は保持）」。
 - リリース対象は`origin/main`から到達可能な（PR・CI・mergeを経た）commitに限る。未マージのcommitを指すタグは、workflow（`Verify the tag is on main`）と`bin/deploy-remote.sh`の両方で拒否する。
-- 実行順に依存せず「最終版」を保証するため、`current`が指す稼働中リリースのcommitより古いタグのデプロイは`bin/deploy-remote.sh`が拒否する。`concurrency`は同時実行の防止のみでFIFO順を保証しないため。
-- 本番ホスト側の切替後スモークチェックがホストから公開URLへ到達できず結果不明のときは、GitHub Actions側の疎通確認（外部経路）が明確な失敗を検出した場合に、workflowが`bin/rollback-release.sh`をSSH経由で実行して直前リリースへ戻す。切替済みの不良リリースが`current`に残らないようにするため。
-- コード側の問題が後から判明した場合は、利用者が`bin/rollback-release.sh`を本番ホストで実行し、`current`を過去リリースへ戻す（DBは戻さない。additive-only運用が前提）。
+- 通常のリリース更新は稼働中リリースを含んで前進する。`bin/deploy-remote.sh`は、稼働中リリースのcommitがタグのcommitの祖先であること（＝タグが稼働中の子孫）を必須にし、稼働中より古いタグも、mainには入っているが稼働中と分岐したタグ（比較不能）も拒否する。`concurrency`は同時実行の防止のみでFIFO順を保証しないため。
+- 本番ホスト側の切替後スモークチェックがホストから公開URLへ到達できず結果不明のときは、GitHub Actions側の疎通確認（外部経路。`--connect-timeout`/`--max-time`で有限時間に完了する）が明確な失敗を検出した場合に、workflowが`bin/rollback-release.sh`を引数なしでSSH経由実行し、`previous`（＝そのデプロイ開始時に稼働していたリリース）へ戻す。切替済みの不良リリースが`current`に残らないようにするため。
+- コード側の問題が後から判明した場合は、利用者が`bin/rollback-release.sh`を本番ホストで実行し、`current`を`previous`または明示指定した過去リリースへ戻す（DBは戻さない。additive-only運用が前提）。
 - SSH接続情報・絶対パス・本番URL・解析指示本文はすべてGitHub Secretsに置き、リポジトリ・Issue・PR・デプロイログへ記録しない。必要なSecretの一覧は`README.md`「必要なGitHub Secrets」。
 - 秘密値はSSHのコマンドライン引数へ載せず、標準入力経由でリモートシェルへ渡す（リモートホストの`ps`へ現れないようにするため）。host key検証は`DEPLOY_SSH_KNOWN_HOSTS`で常に有効にし、`StrictHostKeyChecking=no`等での無効化はしない。
 - 同一本番環境への同時デプロイはworkflowの`concurrency`グループで直列化する。

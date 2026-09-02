@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 #
-# 公開先を既存の完成済みリリースへ戻す。XServer 本番ホスト上で利用者が手で
-# 実行する（AI agent は SSH 接続しない。AGENTS.md「本番環境・SSHの安全ルール」）。
+# 公開先を既存の完成済みリリースへ戻す。XServer 本番ホスト上で実行する
+# （利用者が手で、または deploy.yaml の自動 rollback step が SSH 経由で）。
+# AI agent は SSH 接続しない（AGENTS.md「本番環境・SSHの安全ルール」）。
 # GNU coreutils（mv -T / readlink 等）を前提とする。
 #
 # 使い方（環境変数で渡す。値は argv に載せない）:
 #   DEPLOY_ROOT=<deploy-root> DEPLOY_PUBLIC_PATH=<public_html> \
 #     bin/rollback-release.sh [<release-name>]
 #
-# <release-name> を省略すると、current の 1 つ前（mtime 順）のリリースへ戻す。
+# <release-name> を指定するとそのリリースへ戻す（利用者による明示選択）。
+# 省略すると <deploy-root>/previous（直前のデプロイ開始時に稼働していた
+# リリースとして bin/deploy-remote.sh が記録した symlink）へ戻す。mtime 推測は
+# しない。previous が無い場合は、明示指定を求めて中止する。
+#
 # 本番DBのマイグレーションは戻さない（additive-only 運用が前提。
 # database/migrations/README.md）。切替は current symlink の原子的な差し替え
 # だけで、リリースディレクトリ自体は変更しない。
@@ -24,6 +29,7 @@ PHP_BIN="${DEPLOY_PHP_BIN:-/opt/php-8.5.5/bin/php}"
 
 RELEASES_DIR="$DEPLOY_ROOT/releases"
 CURRENT_LINK="$DEPLOY_ROOT/current"
+PREVIOUS_LINK="$DEPLOY_ROOT/previous"
 
 CURRENT_TARGET=""
 if [ -L "$CURRENT_LINK" ] && [ -d "$CURRENT_LINK" ]; then
@@ -53,15 +59,11 @@ done
 target_name="${1:-}"
 if [ -n "$target_name" ]; then
     target_dir="$RELEASES_DIR/$target_name"
+elif [ -L "$PREVIOUS_LINK" ] && [ -d "$PREVIOUS_LINK" ]; then
+    target_dir="$(cd "$PREVIOUS_LINK" && pwd -P)"
 else
-    target_dir=""
-    for dir in "${releases[@]}"; do
-        if [ -n "$CURRENT_TARGET" ] && [ "$(cd "$dir" && pwd -P)" = "$CURRENT_TARGET" ]; then
-            continue
-        fi
-        target_dir="$dir"
-        break
-    done
+    echo "Rollback aborted: no recorded previous release (<deploy-root>/previous). Pass an explicit <release-name>." >&2
+    exit 1
 fi
 
 if [ -z "$target_dir" ] || [ ! -d "$target_dir" ]; then

@@ -253,12 +253,14 @@ XServerのアカウントホーム配下・ドキュメントルート外に、�
   shared/.env                恒久的な秘密設定。デプロイは読み書きしない
   releases/<tag>/            タグごとの完成リリース（git checkout + vendor + 解析指示本文）
   current -> releases/<tag>  公開中リリースへのsymlink（初回リリース前は存在しない）
+  previous -> releases/<tag> 直前のデプロイ開始時に稼働していたリリース（rollbackの既定の戻し先）
 ```
 
 - ドキュメントルート（`public_html`）には2つだけを置きます。`index.php` は `<deploy-root>/current/public/index.php` へのシンボリックリンク、`.htaccess` は同じ場所からコピーした通常ファイルです。`current` を差し替えると、次のリクエストから新しいリリースが読まれます（PHPの `__DIR__` はsymlinkの実体側で解決されるため、`public/index.php` はコード変更なしで動きます）。
 - デプロイ対象は、`origin/main` から到達可能な（PR・CI・mergeを経た）commitに限ります。未マージのcommitへ付けたタグはworkflowと本番ホストの両方で拒否されます。
+- 通常のリリース更新は、稼働中リリースを必ず含んで前進します。タグの指すcommitが稼働中リリースのcommitの子孫であることを必須にし、**稼働中より古いタグも、mainには入っているが稼働中と分岐したタグ（比較不能）も拒否します**。意図的な過去リリースへの復帰は `bin/rollback-release.sh` で行います。
 - デプロイは、対象タグのコード・`composer.lock` どおりの依存関係・解析指示本文の復元・マイグレーション適用・起動検証まで **新しい `releases/<tag>/` で完成させてから**、`current` symlinkを原子的に切り替えます。切替前に失敗した場合、稼働中のリリースには一切影響しません。
-- 切替後の未認証チェックで異常を検出した場合は、直前のリリースへ自動で `current` を戻します（本番ホスト側スモークチェックが401以外を得たとき、またはそれが結果不明でGitHub Actions側の疎通確認が明確な失敗を検出したとき）。コード側の問題が後から判明した場合は、`bin/rollback-release.sh` で任意の過去リリースへ `current` を戻せます。
+- 切替の直前に、そのとき稼働していたリリースを `previous` symlinkへ記録します。切替後の未認証チェックで異常を検出した場合は、この `previous`（＝そのデプロイ開始時に稼働していたリリース）へ自動で `current` を戻します（本番ホスト側スモークチェックが401以外を得たとき、またはそれが結果不明でGitHub Actions側の疎通確認が明確な失敗を検出したとき）。コード側の問題が後から判明した場合は、`bin/rollback-release.sh` で `previous` または明示指定した過去リリースへ `current` を戻せます。
 - `shared/.env`（`DB_*` / `OPENAI_API_KEY` / `ANALYSIS_FINGERPRINT_SECRET` 等）はデプロイが作成・変更・削除しません。各リリースへは `.env` symlinkとして貼るだけです。
 - 解析指示本文だけは、GitHub Secret `ANALYSIS_INSTRUCTION` に保持した本文を、デプロイのたびに **新しいリリース内の** 実行時ファイル（既定 `config/analysis-instruction.txt`）へ書き戻します。搬送形式（Actions→SSH間はbase64）と復元はdeploy側の責務で、アプリはSecretを直接扱いません（「環境設定」節）。
 - 本番DBは全リリースで共有します。マイグレーションは新リリースへ戻しても旧リリースが動作不能にならない範囲（additive-only）に限ります（`database/migrations/README.md`）。
@@ -346,18 +348,18 @@ Issue #13 の手動配置（単一ディレクトリ）からの移行手順は�
 
 1. **main 限定ガード**: タグの指すcommitが `origin/main` から到達可能（＝PR・CI・mergeを経ている）ことを確認します。未マージ・未レビューのcommitを指すタグは、SSH接続前にworkflowを失敗させます。本番ホスト側でも `bin/deploy-remote.sh` が同じ確認を行います。
 2. `<deploy-root>/repo` で `origin` と対象タグをfetchし、タグが指すcommitがworkflowの確定したcommitと一致することを確認します。
-3. **順序ガード**: `current` が指す稼働中リリースのcommitより古い（= 稼働中commitの祖先。同一を含む）タグは拒否します。`concurrency` は同時実行を防ぐだけでFIFO順を保証しないため、遅れて実行された古いタグで本番が巻き戻らないようにします。
+3. **順序ガード**: `current` が指す稼働中リリースのcommitが、タグの指すcommitの祖先である（＝タグが稼働中の子孫として前進している）ことを必須にします。稼働中より古いタグも、mainには入っているが稼働中と分岐したタグ（比較不能）も拒否します。`concurrency` は同時実行を防ぐだけでFIFO順を保証しないため、遅れて実行された古い／分岐タグで本番が巻き戻らないようにします。
 4. `releases/<tag>/` を作り直し、`repo` からcloneしてタグのcommitへ `git checkout --detach` します。
 5. `shared/.env` をリリースへsymlinkします。
 6. GitHub Secret `ANALYSIS_INSTRUCTION` の解析指示本文を、リリース内の実行時ファイルへ平文で書き戻します（内容はログへ出しません）。1行目（空白のみも不可）または分析ルール本文が空なら失敗させます。
 7. 専用Composerと `/opt/php-8.5.5/bin/php` で `composer install --no-dev --optimize-autoloader --classmap-authoritative` をリリースへ実行します。
 8. `/opt/php-8.5.5/bin/php bin/migrate.php` で未適用マイグレーションを本番DBへ適用します。
 9. `/opt/php-8.5.5/bin/php bin/check-config.php` で、アプリ本体と同じ設定読み込み（`bootstrap/config.php`）によりリリースが起動可能なことを検証します。解析指示本文の判定は実行時と完全に一致します。ここまで通ってはじめて公開先を切り替えます。
-10. `releases/<tag>/public/.htaccess` を `public_html` へコピーし、`current` symlinkを新リリースへ原子的に切り替えます。
-11. `DEPLOY_BASE_URL` が設定されていれば、未認証の `POST /v1/analyses` が401であることを確認します。401でないHTTP応答が返った場合は、直前のリリースへ `current` を自動で戻してworkflowを失敗させます（ホストから本番URLへ到達できず結果が得られない場合は戻さず、次のGitHub Actions側チェックに委ねます）。
-12. `bin/check-deploy-connectivity.sh`（GitHub Actions側）で未認証の `POST /v1/analyses` が401、未定義パスへのGETが404であることを外部経路から確認します。
-13. 手順10の切替が成功したうえで手順12が明確な失敗を検出した場合は、`bin/rollback-release.sh` をSSH経由で実行して直前のリリースへ `current` を戻し、workflowは失敗のままにします。
-14. 過去リリースは新しい順に `DEPLOY_KEEP_RELEASES` 個（既定5）を残し、それ以外を削除します（`current` は常に保持）。
+10. いま稼働しているリリースを `previous` symlinkへ記録し、`releases/<tag>/public/.htaccess` を `public_html` へコピーして、`current` symlinkを新リリースへ原子的に切り替えます。
+11. `DEPLOY_BASE_URL` が設定されていれば、未認証の `POST /v1/analyses` が401であることを確認します。401でないHTTP応答が返った場合は、`previous` へ `current` を自動で戻してworkflowを失敗させます（ホストから本番URLへ到達できず結果が得られない場合は戻さず、次のGitHub Actions側チェックに委ねます）。
+12. `bin/check-deploy-connectivity.sh`（GitHub Actions側）で未認証の `POST /v1/analyses` が401、未定義パスへのGETが404であることを外部経路から確認します。curlは `--connect-timeout` / `--max-time` を課し、接続後に応答が返らなくても有限時間で失敗として完了します。
+13. 手順10の切替が成功したうえで手順12が明確な失敗を検出した場合は、`bin/rollback-release.sh`（引数なし）をSSH経由で実行して `previous`（＝そのデプロイ開始時に稼働していたリリース）へ `current` を戻し、workflowは失敗のままにします。
+14. 過去リリースは新しい順に `DEPLOY_KEEP_RELEASES` 個（既定5）を残し、それ以外を削除します（`current` と `previous` は常に保持）。
 
 本番の `shared/.env` はworkflowから作成・コピー・上書き・削除しません。SSHの秘密鍵・接続先・絶対パス・本番URL・解析指示本文は、いずれもGitHub Secretsから取得し、リポジトリへは記録しません。同一本番環境への同時デプロイは `concurrency` グループで直列化します。SSH host key verificationは `DEPLOY_SSH_KNOWN_HOSTS` を使い必ず有効にし、`StrictHostKeyChecking=no` 等での無効化は行いません。
 
@@ -389,7 +391,7 @@ git push origin v1.0.0
 
 ### ロールバック
 
-- **アプリコード**: 本番ホストで `bin/rollback-release.sh` を実行し、`current` を既存の過去リリースへ原子的に戻します（省略時は1つ前）。リリースディレクトリはそのまま再利用するため、`composer install` の再実行は不要です。切替後の疎通確認で明確な失敗が出た場合は、自動デプロイがこのスクリプトをSSH経由で実行して直前リリースへ戻します。
+- **アプリコード**: 本番ホストで `bin/rollback-release.sh` を実行し、`current` を既存の過去リリースへ原子的に戻します。**引数を省略すると `previous`（＝直前のデプロイ開始時に稼働していたリリース）へ**、引数で版名を渡すとその版へ戻します（利用者による明示選択）。リリースディレクトリはそのまま再利用するため、`composer install` の再実行は不要です。切替後の疎通確認で明確な失敗が出た場合は、自動デプロイがこのスクリプトを引数なしでSSH経由実行し、同じ `previous` へ戻します。
 
     ```shell
     cd <deploy-root>/current
@@ -397,7 +399,7 @@ git push origin v1.0.0
     # 版を指定する場合: DEPLOY_ROOT=... DEPLOY_PUBLIC_PATH=... bin/rollback-release.sh v1.0.0
     ```
 
-    より新しいcommitへ「進める」形の是正は、CIとmergeを経た `main` のcommitへ新しい `v*` タグをpushします（順序ガードにより古いタグの再pushは拒否されます）。
+    `previous` が無い（初回デプロイ直後など）場合、引数なしの実行は版名の明示を求めて中止します。より新しいcommitへ「進める」形の是正は、CIとmergeを経た `main` のcommitへ新しい `v*` タグをpushします（順序ガードにより古い／分岐タグは拒否されます）。
 - **マイグレーション**: `bin/migrate.php` にロールバックはありません。additive-only運用のため旧リリースは動作を続けられます。データ面の是正が必要な場合は、バックアップからの復元または追加のマイグレーションで行い、適用済みファイルは変更しません。
 - **公開停止**: `public_html/index.php` のシンボリックリンクを外すか、`.htaccess` を退避すれば公開を止められます。
 
