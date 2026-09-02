@@ -46,17 +46,26 @@ if (preg_match('/\A[1-9][0-9]*\z/', (string) $openAiTimeoutSeconds) !== 1) {
     );
 }
 
-// OpenAIへ送る解析指示本文（system promptと分析ルール本文）は実行環境の設定
-// から読む。実値はrepositoryへ含めない。既定は config/analysis-instruction.php、
-// `ANALYSIS_INSTRUCTION_FILE` で別パスへ差し替えられる。欠落・空・不正な内容は
-// 値を出力せずに起動を失敗させる（Androidから指定するAPIにはしない）。
+// OpenAIへ送る解析指示本文（system promptと分析ルール本文）は、実行時の
+// プレーンテキストファイルから読む。既定は config/analysis-instruction.txt、
+// `ANALYSIS_INSTRUCTION_FILE` で別パス（例: `.env` と並べた非公開ディレクトリ）
+// へ差し替えられる。ファイルはGit管理対象外で、実値はrepository・Issue・PR・
+// commit message・テスト・ログへ含めない。
+//
+// GitHub Secretに保持するのはprompt本文だけで、Secretや運搬形式（base64等）は
+// このアプリが直接扱わない。productionではdeploy時にSecretの本文をこのファイル
+// へ復元する。ローカルは同じファイルを直接編集する。
+//
+// 本文は「1行目 = system prompt」「2行目以降 = 分析ルール本文」で読む（間の空行は
+// 任意）。欠落・空・本体不足は、内容を出力せずに起動を失敗させる（Androidから
+// 指定するAPIにはしない）。
 $analysisInstructionFile = $_ENV['ANALYSIS_INSTRUCTION_FILE']
     ?? $_SERVER['ANALYSIS_INSTRUCTION_FILE']
     ?? null;
 
 if (!is_string($analysisInstructionFile) || $analysisInstructionFile === '') {
     $analysisInstructionFile = dirname(__DIR__)
-        . '/config/analysis-instruction.php';
+        . '/config/analysis-instruction.txt';
 }
 
 if (!is_file($analysisInstructionFile) || !is_readable($analysisInstructionFile)) {
@@ -65,48 +74,30 @@ if (!is_file($analysisInstructionFile) || !is_readable($analysisInstructionFile)
     );
 }
 
-// 設定ファイルはPHPとして評価する（配列をreturnさせる）。中身が期待どおりの
-// PHPでない場合（`<?php`前後の地の文・`echo`・パースエラー等）、`require`は
-// その内容やコード断片を標準出力・HTTP応答・ログへ出し得る。出力バッファで
-// 捕捉して破棄し、評価エラーも元メッセージを引き継がずに握りつぶして、ファイル
-// 内容をHTTP応答・標準出力・通常ログ・例外メッセージのどこへも出さずに失敗する。
-ob_start();
+$analysisInstructionText = file_get_contents($analysisInstructionFile);
 
-try {
-    $analysisInstruction = require $analysisInstructionFile;
-} catch (\Throwable) {
-    ob_end_clean();
+if ($analysisInstructionText === false) {
     throw new \RuntimeException(
-        'The analysis instruction file could not be evaluated.',
+        'The analysis instruction file could not be read.',
     );
 }
 
-$analysisInstructionOutput = ob_get_clean();
+// 1行目を system prompt、残りを分析ルール本文として取り出す。内容そのものは
+// 例外メッセージへ含めない。
+$analysisInstructionText = str_replace("\r\n", "\n", $analysisInstructionText);
+$analysisInstructionNewline = strpos($analysisInstructionText, "\n");
 
-if ($analysisInstructionOutput !== '' && $analysisInstructionOutput !== false) {
-    // 捕捉した出力はファイル内容の一部であり得るため、例外へ載せない。
+$analysisSystemPrompt = $analysisInstructionNewline === false
+    ? trim($analysisInstructionText)
+    : trim(substr($analysisInstructionText, 0, $analysisInstructionNewline));
+$analysisRules = $analysisInstructionNewline === false
+    ? ''
+    : trim(substr($analysisInstructionText, $analysisInstructionNewline + 1));
+
+if ($analysisSystemPrompt === '' || $analysisRules === '') {
     throw new \RuntimeException(
-        'The analysis instruction file must not produce any output.',
-    );
-}
-
-$analysisSystemPrompt = is_array($analysisInstruction)
-    ? ($analysisInstruction['systemPrompt'] ?? null)
-    : null;
-$analysisRules = is_array($analysisInstruction)
-    ? ($analysisInstruction['rules'] ?? null)
-    : null;
-
-if (
-    !is_string($analysisSystemPrompt)
-    || !is_string($analysisRules)
-    || trim($analysisSystemPrompt) === ''
-    || trim($analysisRules) === ''
-) {
-    // 内容そのものは例外メッセージへ含めない。
-    throw new \RuntimeException(
-        'The analysis instruction file must return non-empty "systemPrompt" '
-            . 'and "rules" strings.',
+        'The analysis instruction must have a non-empty system-prompt line '
+            . 'and a non-empty analysis-rules body.',
     );
 }
 

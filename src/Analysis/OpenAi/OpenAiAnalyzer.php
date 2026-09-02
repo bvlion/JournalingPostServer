@@ -21,9 +21,10 @@ use JsonException;
  * Android 側の責務で、Server は `AnalysisRequest::$entries` をそのまま解析材料に
  * する。
  *
- * 解析指示本文（system promptと分析ルール本文）は実行環境の設定として渡す
- * （`bootstrap/config.php`が`config/analysis-instruction.php`から読み込む）。
- * Androidから指定できるAPIにはしない。実値が無い場合は実値を出力せず失敗する。
+ * 解析指示本文（system promptと分析ルール本文）は実行環境からプレーンテキストで
+ * 受け取る（`bootstrap/config.php` が読み取り、1行目を system prompt、残りを
+ * 分析ルール本文として渡す）。Androidから指定できるAPIにはしない。実値が無い
+ * 場合は実値を出力せず失敗する。
  *
  * タイムゾーン変換はしない。entries 0件は既存契約どおりparserが`validation_error`
  * で弾き、ここへ到達しない。

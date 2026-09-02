@@ -14,8 +14,8 @@ final class ConfigurationTest extends TestCase
     {
         $configuration = require __DIR__ . '/../../bootstrap/config.php';
 
-        // 解析指示本文は実行環境の設定ファイルから読む。実値に依存しないよう、
-        // 非空の文字列であることだけを確認してから残りを厳密比較する。
+        // 解析指示本文は実行環境からプレーンテキストで受け取る。実値に依存しない
+        // よう、非空の文字列であることだけを確認してから残りを厳密比較する。
         self::assertIsString($configuration['analysis']['systemPrompt']);
         self::assertNotSame('', trim($configuration['analysis']['systemPrompt']));
         self::assertIsString($configuration['analysis']['analysisRules']);
@@ -46,92 +46,57 @@ final class ConfigurationTest extends TestCase
     }
 
     /**
-     * 解析指示本文の設定ファイルが欠落・不正な場合は、内容を出力せずに起動を
-     * 失敗させる。配置先は `ANALYSIS_INSTRUCTION_FILE` で差し替えられる。
+     * 解析指示本文は実行時のプレーンテキストファイルから読む。1行目を system
+     * prompt、残りを分析ルール本文として渡す（間の空行は任意）。配置先は
+     * `ANALYSIS_INSTRUCTION_FILE` で差し替えられる。
      */
-    public function testMissingOrInvalidAnalysisInstructionFileFailsToBoot(): void
+    public function testAnalysisInstructionIsReadFromPlainTextFile(): void
     {
-        $original = $_ENV['ANALYSIS_INSTRUCTION_FILE'] ?? null;
-        $secret = 'この文字列は例外メッセージに現れてはならない';
-        $invalidFile = tempnam(sys_get_temp_dir(), 'instr');
+        $saved = self::withAnalysisInstructionFile();
+        $file = tempnam(sys_get_temp_dir(), 'instr');
         file_put_contents(
-            $invalidFile,
-            "<?php\n\nreturn ['systemPrompt' => '{$secret}', 'rules' => ''];\n",
+            $file,
+            "架空のsystem prompt行\n\n架空の分析ルール本文。\n- good: 架空。\n",
         );
 
-        $cases = [
-            sys_get_temp_dir() . '/does-not-exist-' . uniqid() . '.php',
-            $invalidFile,
-        ];
-
         try {
-            foreach ($cases as $path) {
-                $_ENV['ANALYSIS_INSTRUCTION_FILE'] = $path;
-                $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $path;
+            $_ENV['ANALYSIS_INSTRUCTION_FILE']
+                = $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $file;
 
-                try {
-                    require __DIR__ . '/../../bootstrap/config.php';
-                    self::fail(sprintf('"%s" が拒否されませんでした。', $path));
-                } catch (RuntimeException $exception) {
-                    self::assertStringContainsString(
-                        'analysis instruction',
-                        $exception->getMessage(),
-                    );
-                    self::assertStringNotContainsString(
-                        $secret,
-                        $exception->getMessage(),
-                    );
-                }
-            }
+            $configuration = require __DIR__ . '/../../bootstrap/config.php';
+
+            self::assertSame(
+                '架空のsystem prompt行',
+                $configuration['analysis']['systemPrompt'],
+            );
+            self::assertSame(
+                "架空の分析ルール本文。\n- good: 架空。",
+                $configuration['analysis']['analysisRules'],
+            );
         } finally {
-            unlink($invalidFile);
-
-            if ($original === null) {
-                unset(
-                    $_ENV['ANALYSIS_INSTRUCTION_FILE'],
-                    $_SERVER['ANALYSIS_INSTRUCTION_FILE'],
-                );
-            } else {
-                $_ENV['ANALYSIS_INSTRUCTION_FILE'] = $original;
-                $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $original;
-            }
+            unlink($file);
+            self::restoreAnalysisInstructionFile($saved);
         }
     }
 
     /**
-     * 解析指示の設定ファイルの評価中に出力が起きても（`<?php`前後の地の文・
-     * `echo`・パースエラー等）、その内容をHTTP応答・標準出力・通常ログ・例外
-     * メッセージへ出さずに失敗する。テストはproduction用の指示本文を含めず、
-     * 架空のマーカー文字列だけで検証する。
+     * ファイルが無い・system prompt行だけで分析ルール本文が無い場合は、内容を
+     * 出力せずに起動を失敗させる。例外メッセージへ本文を載せない。
      */
-    public function testAnalysisInstructionFileOutputIsNeverEmittedOnFailure(): void
+    public function testMissingOrMalformedAnalysisInstructionFileFailsToBoot(): void
     {
-        $original = $_ENV['ANALYSIS_INSTRUCTION_FILE'] ?? null;
-        $marker = 'MARKER-fake-instruction-body-not-a-production-value';
+        $saved = self::withAnalysisInstructionFile();
+        $marker = 'MARKER-fake-instruction-not-a-production-value';
 
-        // require が中身をそのまま標準出力へ流すファイル。
-        $plainText = tempnam(sys_get_temp_dir(), 'instr');
-        file_put_contents($plainText, $marker . "\n");
+        $systemPromptOnlyFile = tempnam(sys_get_temp_dir(), 'instr');
+        file_put_contents($systemPromptOnlyFile, $marker);
 
-        // 正しい配列を return する前に echo するファイル。
-        $echoesThenReturns = tempnam(sys_get_temp_dir(), 'instr');
-        file_put_contents(
-            $echoesThenReturns,
-            "<?php echo '{$marker}';\n"
-                . "return ['systemPrompt' => 'x', 'rules' => 'y'];\n",
-        );
-
-        // パースエラーを起こすファイル。
-        $parseError = tempnam(sys_get_temp_dir(), 'instr');
-        file_put_contents(
-            $parseError,
-            "<?php return ['systemPrompt' => '{$marker}'\n",
-        );
+        $missingPath = sys_get_temp_dir() . '/does-not-exist-' . uniqid() . '.txt';
 
         try {
-            foreach ([$plainText, $echoesThenReturns, $parseError] as $path) {
-                $_ENV['ANALYSIS_INSTRUCTION_FILE'] = $path;
-                $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $path;
+            foreach ([$missingPath, $systemPromptOnlyFile] as $path) {
+                $_ENV['ANALYSIS_INSTRUCTION_FILE']
+                    = $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $path;
 
                 $exception = null;
                 ob_start();
@@ -150,26 +115,55 @@ final class ConfigurationTest extends TestCase
                     sprintf('"%s" が拒否されませんでした。', $path),
                 );
                 self::assertSame('', $emitted);
-                self::assertStringNotContainsString($marker, $emitted);
                 self::assertStringNotContainsString(
                     $marker,
                     $exception->getMessage(),
                 );
+                self::assertStringContainsString(
+                    'analysis instruction',
+                    $exception->getMessage(),
+                );
             }
         } finally {
-            unlink($plainText);
-            unlink($echoesThenReturns);
-            unlink($parseError);
+            unlink($systemPromptOnlyFile);
+            self::restoreAnalysisInstructionFile($saved);
+        }
+    }
 
-            if ($original === null) {
-                unset(
-                    $_ENV['ANALYSIS_INSTRUCTION_FILE'],
-                    $_SERVER['ANALYSIS_INSTRUCTION_FILE'],
-                );
-            } else {
-                $_ENV['ANALYSIS_INSTRUCTION_FILE'] = $original;
-                $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $original;
-            }
+    /**
+     * @return array{string|null, string|null}
+     */
+    private static function withAnalysisInstructionFile(): array
+    {
+        $saved = [
+            $_ENV['ANALYSIS_INSTRUCTION_FILE'] ?? null,
+            $_SERVER['ANALYSIS_INSTRUCTION_FILE'] ?? null,
+        ];
+        unset(
+            $_ENV['ANALYSIS_INSTRUCTION_FILE'],
+            $_SERVER['ANALYSIS_INSTRUCTION_FILE'],
+        );
+
+        return $saved;
+    }
+
+    /**
+     * @param array{string|null, string|null} $saved
+     */
+    private static function restoreAnalysisInstructionFile(array $saved): void
+    {
+        [$env, $server] = $saved;
+
+        if ($env === null) {
+            unset($_ENV['ANALYSIS_INSTRUCTION_FILE']);
+        } else {
+            $_ENV['ANALYSIS_INSTRUCTION_FILE'] = $env;
+        }
+
+        if ($server === null) {
+            unset($_SERVER['ANALYSIS_INSTRUCTION_FILE']);
+        } else {
+            $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $server;
         }
     }
 
