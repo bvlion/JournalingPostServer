@@ -6,7 +6,7 @@ JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を
 
 解析開始の主体は手動・自動ともAndroidです。実行タイミング（timezone・recurrence・自動解析スケジュール）の判断と解析後の通知はAndroid側で行うため、サーバーはscheduler・Pushサーバーになりません。FCM・`triggerAt`・Push予約は使用しません（Issue #3で採用しないと決定）。
 
-実装済みなのは、サーバーの土台（Issue #7）、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）、Hosted AI解析（Issue #4）です。Hosted Server全体は親Issue #1 で管理しています。実OpenAI / XServerでのtimeout実測を行い、`OPENAI_TIMEOUT_SECONDS` は `45` 秒に決定しました（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）。**本番デプロイはまだ行っていません**。
+実装済みなのは、サーバーの土台（Issue #7）、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）、Hosted AI解析（Issue #4）です。Hosted Server全体は親Issue #1 で管理しています。実OpenAI / XServerでのtimeout実測を行い、`OPENAI_TIMEOUT_SECONDS` は `45` 秒に決定しました（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）。Issue #13でこのServer実装をXServer本番環境へ配置し、HTTPS経路でのServer単体smoke test（installation登録・実OpenAI解析・idempotency再送・`Authorization` 転送・平文HTTP拒否・失効データ削除Cron）まで確認しました。
 
 API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめています。AndroidとServerはこの文書を共有します。
 
@@ -212,7 +212,7 @@ make check-clean
 詳細は[本番実行環境](docs/production-environment.md)にまとめています。要点は次のとおりです。
 
 - XServerのレンタルサーバー（`BvlionBatch5` / `holidays-webhook-server`と同一環境）
-- HTTPはPHP 8.5系、CLIは`/opt/php-8.5.5/bin/php`を明示して実行
+- HTTPはPHP 8.5系（本番サーバーパネルで 8.5.9 / `display_errors` OFF を確認済み）、CLIは`/opt/php-8.5.5/bin/php`を明示して実行
 - MySQL 5.7系
 - Composer 2系。依存関係はリポジトリの`composer.lock`どおりに導入
 - `pdo_mysql` / `mbstring` / `json` / `openssl` / `curl`が利用可能
@@ -223,7 +223,7 @@ make check-clean
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
 - XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Cronの用途はこれだけである
 
-**本番デプロイは行っていません。** XServer上の本番ファイル・DB・cron・秘密情報には触れていません。timeout実測は専用の検証ディレクトリ（本番と分離）で実施し、`OPENAI_TIMEOUT_SECONDS = 45` を決定しました。web SAPIの`max_execution_time`はサーバーパネル設定のため未確認で、配置前に60秒以上であることの確認が必要です。
+**Issue #13でこのServer実装をXServer本番環境へ配置しました。** 本番DBへ既存migrationを適用し、本番 `.env`（`DB_*` / `ANALYSIS_FINGERPRINT_SECRET` / `OPENAI_API_KEY` / `OPENAI_TIMEOUT_SECONDS=45`）を設定し、失効データ削除の5分Cronを設定しました。HTTPS経路で `POST /v1/installations` の201、Bearer認証した `POST /v1/analyses` の実OpenAI解析200、同一 `Idempotency-Key` 再送での初回と同一response、Apache経由の `Authorization` ヘッダー転送、平文HTTPの403拒否、`bin/prune-expired-analyses.php` の本番DB接続をServer単体smoke testで確認済みです。web SAPIは PHP 8.5.9 / `display_errors` OFF、`max_execution_time` は 30秒 のままです。Linux版PHPではcurl・stream・DB query等の待機時間が `max_execution_time` の計測対象に含まれないため、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較しません。通常の成功ケースが本番web request内で完了することは確認済みで、意図的なprovider timeout / fault injectionはIssue #13の完了条件に含めていません。timeout実測（`OPENAI_TIMEOUT_SECONDS = 45` の決定）は、配置前に本番と分離した検証専用ディレクトリで実施したものです。
 
 ## 未実装のもの
 
@@ -233,4 +233,4 @@ make check-clean
 - `/health`（作るかどうか未決定）
 - account / profile、timezone、recurrence、entitlement、広告
 - 非同期job queue、Cloud Functions / Cloud Run
-- 本番デプロイおよびデプロイ自動化
+- デプロイ自動化（本番配置自体はIssue #13で実施済み）
