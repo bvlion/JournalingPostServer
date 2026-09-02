@@ -42,6 +42,7 @@ Issue #13で、この構成のServer実装をXServer本番環境へ配置しま�
 
 - ドメインのドキュメントルートは、当該ドメインの`public_html`ディレクトリである。
 - アプリ本体（`bootstrap`・`src`・`bin`・`database`・`vendor`・`composer.*`・`.env`）は、アカウントホーム配下かつドキュメントルート外の専用ディレクトリへ配置する。
+- 解析指示本文の設定ファイル（`config/analysis-instruction.php`）も同じ非公開ディレクトリへ置く。`config/analysis-instruction.example.php`は架空値のひな形であり、実ファイルはこれをコピーして実行環境で用意する（`.env`と同じ扱い。Git管理対象外）。`ANALYSIS_INSTRUCTION_FILE`で`.env`と並べた別パスを指定してもよい。
 - ドキュメントルートへ配置するのは、`public/index.php`へのシンボリックリンクと、`public/.htaccess`をコピーした通常ファイルだけである。
 - ドキュメントルート内のシンボリックリンク経由でも、PHPの`__DIR__`は実体側のディレクトリで解決されるため、`public/index.php`はコード変更なしで利用できる。
 - 実際のアカウント名、ドメイン、絶対パス、認証情報はリポジトリへ記録しない。
@@ -80,7 +81,7 @@ web `max_execution_time` は本番サーバーパネルで **30秒**（PHP 8.5.9
 
 - XServer Cronを利用できる。
 - 失効した解析metadataと解析結果の引き渡しバッファの削除に使用する。解析requestの処理中にも削除するが、requestが来なくなった期間はそれだけでは動かないため、解析結果本文が保持期間を越えて残らないようにするにはCronが必要である。
-- `bin/prune-expired-analyses.php`は`DB_*`だけを必要とする（`bootstrap/database-config.php`）。`OPENAI_API_KEY`の失効対応などで`OPENAI_*` / `ANALYSIS_FINGERPRINT_SECRET`を空にしても、このCronは起動でき、失効した本文の削除保証を維持する。
+- `bin/prune-expired-analyses.php`は`DB_*`だけを必要とする（`bootstrap/database-config.php`）。`OPENAI_API_KEY`の失効対応などで`OPENAI_*` / `ANALYSIS_FINGERPRINT_SECRET`を空にしても、また解析指示本文の設定ファイルが無くても、このCronは起動でき、失効した本文の削除保証を維持する。
 - Cronの作業ディレクトリはアプリ本体の配置ディレクトリである保証がない。スクリプトのパスを相対で書かず、配置ディレクトリへ移動してから実行する。5分間隔で次を実行する（`<アプリ本体の配置ディレクトリ>`は「配置構成」で決めた実際のパスに置き換える。実際のパスはリポジトリへ記録しない）。
 
 ```shell
@@ -92,8 +93,9 @@ cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/pr
 
 ## 秘密情報
 
-- `.env`はドキュメントルート外のアプリ本体ディレクトリへ置き、Web経由で読めない位置に配置する。
+- `.env`はドキュメントルート外のアプリ本体ディレクトリへ置き、Web経由で読めない位置に配置する。解析指示本文の設定ファイル（`config/analysis-instruction.php`）も同様に配置する。
 - `OPENAI_API_KEY`はOpenAI Responses APIのAPI keyである。実際の値はリポジトリ・Issue・PR・デプロイログへ記録しない。
+- OpenAIへ送る解析指示本文（`config/analysis-instruction.php`の`systemPrompt` / `rules`）は、実行環境の固定設定として持つ。実際の内容はリポジトリ・Issue・PR・デプロイログ・通常ログ・error responseへ記録しない。欠落・空・不正な場合は内容を出力せずに起動を失敗させる。
 - `OPENAI_TIMEOUT_SECONDS`は秘密値ではない。実測により `45`（「外部通信（OpenAI）」参照）。
 - `ANALYSIS_FINGERPRINT_SECRET`は解析requestのfingerprintを鍵付きにするための秘密値である。32文字以上のランダム値を1度だけ生成し、本番deployを跨いで同じ値を使う。`/opt/php-8.5.5/bin/php -r 'echo base64_encode(random_bytes(48)), PHP_EOL;'`などで生成する。
 - この値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になる。無停止で入れ替える手順は用意していないため、必要な場合は影響が保持期間内に収まることを前提に行う。

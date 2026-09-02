@@ -69,6 +69,8 @@ return static function (?Analyzer $analyzer = null) use ($configuration): App {
                     $configuration['analysis']['openAiTimeoutSeconds'],
                 ),
                 $configuration['analysis']['openAiApiKey'],
+                $configuration['analysis']['systemPrompt'],
+                $configuration['analysis']['analysisRules'],
             ),
             $configuration['analysis']['fingerprintSecret'],
         ),

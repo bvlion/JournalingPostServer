@@ -34,7 +34,7 @@
         "sort-packages": true
     },
     "scripts": {
-        "lint": "find bin bootstrap public src tests -name '*.php' -print0 | xargs -0 -n1 php -l",
+        "lint": "find bin bootstrap config public src tests -name '*.php' -print0 | xargs -0 -n1 php -l",
         "migrate": "@php bin/migrate.php",
         "prune": "@php bin/prune-expired-analyses.php",
         "style": "phpcs",

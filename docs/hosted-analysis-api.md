@@ -192,7 +192,7 @@ Android側`AnalysisResult`が必要とする「対象期間」「解析日時」
 
 ## AI provider（OpenAI）
 
-Hosted解析はOpenAI Responses APIで行います（`JournalingPostServer\Analysis\OpenAi\OpenAiAnalyzer`）。
+Hosted解析はOpenAI Responses APIで行います（`JournalingPostServer\Analysis\OpenAi\OpenAiAnalyzer`）。system promptと分析ルール本文は実行環境の設定として持ちます。
 
 - endpoint: `POST https://api.openai.com/v1/responses`（curl拡張で呼び出す。OpenAI SDKは追加しない）
 - model: `gpt-5.6-luna` / reasoning effort `none` / `max_output_tokens` 800 / `text.verbosity` `low`
@@ -203,7 +203,7 @@ ServerはHTTP応答のtop-level `status`が`completed`のResponseだけを構造
 
 ### OpenAIへ送る内容
 
-- system prompt（固定文）と、分析ルール本文（固定文）＋対象期間のログ文字列。
+- system prompt（固定文）と、分析ルール本文（固定文）＋対象期間のログ文字列。system promptと分析ルール本文はServer側の固定設定で、実行環境の設定ファイル（`config/analysis-instruction.php`）から読み込みます。Androidから指定するAPIにはしません（[本番実行環境](production-environment.md)の「秘密情報」）。
 - ログ文字列は`AnalysisRequest.entries`から組み立てます。entryを`recordedAt`昇順（UTCの絶対時刻）に並べ、1行ずつ`<recordedAt> <本文>`にします。
   - moodがあるentryの本文は次のように組み立てます。moodに絵文字があれば絵文字、無ければ名称（`label`）を使い、moodのみなら「気分は{X}とのこと」、noteもあればその後へtrimしたnoteを続けます。
   - noteのみのentryはnoteをそのまま使います。
@@ -383,7 +383,7 @@ Issue #13 の本番配置後 smoke test で、実サイズの `POST /v1/analyses
 
 AI呼び出しは`JournalingPostServer\Analysis\Analyzer`の1点に閉じています。認証・request検証・idempotency・error契約はこのinterfaceの実装に依存しません。
 
-- Issue #4で`OpenAi\OpenAiAnalyzer`（curl transport）を既定実装として追加しました。この文書のrequest / response契約は変わりません。
+- Issue #4で`OpenAi\OpenAiAnalyzer`（curl transport）を既定実装として追加しました。system promptと分析ルール本文は実行環境の設定から読み込みます。この文書のrequest / response契約は変わりません。
 - テストは`Analyzer`をこのseamで差し替え、実OpenAIへ接続しません。
 - XServer / PHP / OpenAI APIの実測により同期処理が成立しないと分かった場合にだけ、非同期化を検討します。その場合も`POST /v1/analyses`は受付として残し、結果取得を追加する形を優先します。先回りして非同期基盤を作りません。
 

@@ -14,6 +14,17 @@ final class ConfigurationTest extends TestCase
     {
         $configuration = require __DIR__ . '/../../bootstrap/config.php';
 
+        // 解析指示本文は実行環境の設定ファイルから読む。実値に依存しないよう、
+        // 非空の文字列であることだけを確認してから残りを厳密比較する。
+        self::assertIsString($configuration['analysis']['systemPrompt']);
+        self::assertNotSame('', trim($configuration['analysis']['systemPrompt']));
+        self::assertIsString($configuration['analysis']['analysisRules']);
+        self::assertNotSame('', trim($configuration['analysis']['analysisRules']));
+        unset(
+            $configuration['analysis']['systemPrompt'],
+            $configuration['analysis']['analysisRules'],
+        );
+
         self::assertSame(
             [
                 'database' => [
@@ -32,6 +43,134 @@ final class ConfigurationTest extends TestCase
             ],
             $configuration,
         );
+    }
+
+    /**
+     * 解析指示本文の設定ファイルが欠落・不正な場合は、内容を出力せずに起動を
+     * 失敗させる。配置先は `ANALYSIS_INSTRUCTION_FILE` で差し替えられる。
+     */
+    public function testMissingOrInvalidAnalysisInstructionFileFailsToBoot(): void
+    {
+        $original = $_ENV['ANALYSIS_INSTRUCTION_FILE'] ?? null;
+        $secret = 'この文字列は例外メッセージに現れてはならない';
+        $invalidFile = tempnam(sys_get_temp_dir(), 'instr');
+        file_put_contents(
+            $invalidFile,
+            "<?php\n\nreturn ['systemPrompt' => '{$secret}', 'rules' => ''];\n",
+        );
+
+        $cases = [
+            sys_get_temp_dir() . '/does-not-exist-' . uniqid() . '.php',
+            $invalidFile,
+        ];
+
+        try {
+            foreach ($cases as $path) {
+                $_ENV['ANALYSIS_INSTRUCTION_FILE'] = $path;
+                $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $path;
+
+                try {
+                    require __DIR__ . '/../../bootstrap/config.php';
+                    self::fail(sprintf('"%s" が拒否されませんでした。', $path));
+                } catch (RuntimeException $exception) {
+                    self::assertStringContainsString(
+                        'analysis instruction',
+                        $exception->getMessage(),
+                    );
+                    self::assertStringNotContainsString(
+                        $secret,
+                        $exception->getMessage(),
+                    );
+                }
+            }
+        } finally {
+            unlink($invalidFile);
+
+            if ($original === null) {
+                unset(
+                    $_ENV['ANALYSIS_INSTRUCTION_FILE'],
+                    $_SERVER['ANALYSIS_INSTRUCTION_FILE'],
+                );
+            } else {
+                $_ENV['ANALYSIS_INSTRUCTION_FILE'] = $original;
+                $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $original;
+            }
+        }
+    }
+
+    /**
+     * 解析指示の設定ファイルの評価中に出力が起きても（`<?php`前後の地の文・
+     * `echo`・パースエラー等）、その内容をHTTP応答・標準出力・通常ログ・例外
+     * メッセージへ出さずに失敗する。テストはproduction用の指示本文を含めず、
+     * 架空のマーカー文字列だけで検証する。
+     */
+    public function testAnalysisInstructionFileOutputIsNeverEmittedOnFailure(): void
+    {
+        $original = $_ENV['ANALYSIS_INSTRUCTION_FILE'] ?? null;
+        $marker = 'MARKER-fake-instruction-body-not-a-production-value';
+
+        // require が中身をそのまま標準出力へ流すファイル。
+        $plainText = tempnam(sys_get_temp_dir(), 'instr');
+        file_put_contents($plainText, $marker . "\n");
+
+        // 正しい配列を return する前に echo するファイル。
+        $echoesThenReturns = tempnam(sys_get_temp_dir(), 'instr');
+        file_put_contents(
+            $echoesThenReturns,
+            "<?php echo '{$marker}';\n"
+                . "return ['systemPrompt' => 'x', 'rules' => 'y'];\n",
+        );
+
+        // パースエラーを起こすファイル。
+        $parseError = tempnam(sys_get_temp_dir(), 'instr');
+        file_put_contents(
+            $parseError,
+            "<?php return ['systemPrompt' => '{$marker}'\n",
+        );
+
+        try {
+            foreach ([$plainText, $echoesThenReturns, $parseError] as $path) {
+                $_ENV['ANALYSIS_INSTRUCTION_FILE'] = $path;
+                $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $path;
+
+                $exception = null;
+                ob_start();
+
+                try {
+                    require __DIR__ . '/../../bootstrap/config.php';
+                } catch (RuntimeException $caught) {
+                    $exception = $caught;
+                }
+
+                $emitted = ob_get_clean();
+
+                self::assertInstanceOf(
+                    RuntimeException::class,
+                    $exception,
+                    sprintf('"%s" が拒否されませんでした。', $path),
+                );
+                self::assertSame('', $emitted);
+                self::assertStringNotContainsString($marker, $emitted);
+                self::assertStringNotContainsString(
+                    $marker,
+                    $exception->getMessage(),
+                );
+            }
+        } finally {
+            unlink($plainText);
+            unlink($echoesThenReturns);
+            unlink($parseError);
+
+            if ($original === null) {
+                unset(
+                    $_ENV['ANALYSIS_INSTRUCTION_FILE'],
+                    $_SERVER['ANALYSIS_INSTRUCTION_FILE'],
+                );
+            } else {
+                $_ENV['ANALYSIS_INSTRUCTION_FILE'] = $original;
+                $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $original;
+            }
+        }
     }
 
     public function testDefaultTimeZoneIsFixedToUtc(): void

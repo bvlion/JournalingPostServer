@@ -24,6 +24,17 @@ final class OpenAiAnalyzerTest extends TestCase
 {
     private const SECRET_KEY = 'sk-fake-secret-not-real-abcdef0123456789';
 
+    // 解析指示本文は実行環境の設定から渡す。テストは実値を必要とせず、架空の
+    // 指示文で組み立て・整形・失敗時の扱いを検証する。
+    private const SYSTEM_PROMPT = '架空のsystem prompt。実データではない。';
+
+    private const ANALYSIS_RULES = <<<'RULES'
+架空の分析ルール本文。実データではない。
+
+- good: 架空のルール。
+- tags: 架空のルール。
+RULES;
+
     private FakeResponsesTransport $transport;
 
     protected function setUp(): void
@@ -37,7 +48,7 @@ final class OpenAiAnalyzerTest extends TestCase
      */
     public function testRequestIsBuiltWithTheExpectedOpenAiContract(): void
     {
-        $payload = OpenAiAnalyzer::buildRequestPayload(self::request());
+        $payload = $this->analyzer()->buildRequestPayload(self::request());
 
         self::assertSame('gpt-5.6-luna', $payload['model']);
         self::assertSame(['effort' => 'none'], $payload['reasoning']);
@@ -45,7 +56,7 @@ final class OpenAiAnalyzerTest extends TestCase
         self::assertSame('low', $payload['text']['verbosity']);
         self::assertFalse($payload['store']);
         self::assertSame(
-            'これはローカル検証用の架空の system prompt です。実データではありません。',
+            self::SYSTEM_PROMPT,
             $payload['input'][0]['content'],
         );
         self::assertSame('system', $payload['input'][0]['role']);
@@ -71,26 +82,42 @@ final class OpenAiAnalyzerTest extends TestCase
     }
 
     /**
-     * 設定から渡した分析ルール本文を、そのまま user プロンプトへ組み込む。
+     * userプロンプトは、設定から渡した分析ルール本文をそのまま先頭へ置き、その
+     * 後ろへ `## Slackのログ` 見出しと対象期間のログ文字列を続ける。入力元が
+     * 変わっても見出し・組み立ては作り直さない。
      */
-    public function testUserPromptKeepsTheConfiguredAnalysisRules(): void
+    public function testUserPromptEmbedsTheConfiguredRulesThenTheTranscript(): void
     {
-        $prompt = OpenAiAnalyzer::buildRequestPayload(self::request())
+        $request = self::request();
+        $prompt = $this->analyzer()->buildRequestPayload($request)
             ['input'][1]['content'];
 
-        self::assertStringContainsString(
-            'これはローカル検証・テスト用のダミー指示文です',
+        self::assertSame(
+            self::ANALYSIS_RULES
+                . "\n\n## Slackのログ\n"
+                . OpenAiAnalyzer::buildTranscript($request)
+                . "\n",
             $prompt,
         );
-        self::assertStringContainsString(
-            '- good: 文字列の配列。',
-            $prompt,
-        );
-        self::assertStringContainsString(
-            '- tags: 文字列の配列。',
-            $prompt,
-        );
-        self::assertStringContainsString("\n## Slackのログ\n", $prompt);
+    }
+
+    /**
+     * 解析指示本文が実行環境に設定されていない場合は、値を出力せずに失敗する。
+     * OpenAIは呼ばない（transportは触れられない）。
+     */
+    public function testMissingInstructionTextIsRejectedWithoutLeaking(): void
+    {
+        foreach ([['', self::ANALYSIS_RULES], [self::SYSTEM_PROMPT, "  \n "]] as [$system, $rules]) {
+            try {
+                new OpenAiAnalyzer($this->transport, self::SECRET_KEY, $system, $rules);
+                self::fail('未設定の解析指示本文が拒否されませんでした。');
+            } catch (\RuntimeException $exception) {
+                self::assertStringNotContainsString(self::SECRET_KEY, $exception->getMessage());
+                self::assertStringNotContainsString(self::ANALYSIS_RULES, $exception->getMessage());
+            }
+        }
+
+        self::assertSame(0, $this->transport->callCount);
     }
 
     /**
@@ -475,7 +502,12 @@ final class OpenAiAnalyzerTest extends TestCase
 
     private function analyzer(): OpenAiAnalyzer
     {
-        return new OpenAiAnalyzer($this->transport, self::SECRET_KEY);
+        return new OpenAiAnalyzer(
+            $this->transport,
+            self::SECRET_KEY,
+            self::SYSTEM_PROMPT,
+            self::ANALYSIS_RULES,
+        );
     }
 
     private static function request(): AnalysisRequest

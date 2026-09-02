@@ -2,7 +2,7 @@
 
 JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を担う最小構成のHTTPサーバーです。XServer上で動作させることを前提としています。
 
-日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は、Androidから受け取ったJournalEntryをAI解析して同じHTTP応答で結果を返すこと（Issue #4）だけです。AI解析はOpenAI Responses APIで行います。
+日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は、Androidから受け取ったJournalEntryをAI解析して同じHTTP応答で結果を返すこと（Issue #4）だけです。AI解析はOpenAI Responses APIで行います。OpenAIへ送る解析指示本文は実行環境の設定として持ちます（「環境設定」）。
 
 解析開始の主体は手動・自動ともAndroidです。実行タイミング（timezone・recurrence・自動解析スケジュール）の判断と解析後の通知はAndroid側で行うため、サーバーはscheduler・Pushサーバーになりません。FCM・`triggerAt`・Push予約は使用しません（Issue #3で採用しないと決定）。
 
@@ -63,10 +63,19 @@ cp .env.example .env
 | `ANALYSIS_FINGERPRINT_SECRET` | 解析requestのfingerprintを鍵付きにするための秘密値（32文字以上） |
 | `OPENAI_API_KEY` | OpenAI Responses APIのAPI key |
 | `OPENAI_TIMEOUT_SECONDS` | OpenAI呼び出しのtimeout秒数（正の整数）。実測により本番値は `45`（[本番timeoutの決定](docs/hosted-analysis-api.md#timeout)） |
+| `ANALYSIS_INSTRUCTION_FILE` | 任意。解析指示本文の設定ファイルのパス。未指定なら `config/analysis-instruction.php` |
 
-すべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`ANALYSIS_FINGERPRINT_SECRET`は32文字未満、`OPENAI_TIMEOUT_SECONDS`は正の整数でない場合も同じように失敗します。`.env.example`の`OPENAI_API_KEY`など秘密系の値はすべて実データから生成していない架空値です。`OPENAI_TIMEOUT_SECONDS=45`は実測にもとづく本番相当値です。
+`ANALYSIS_INSTRUCTION_FILE`以外はすべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`ANALYSIS_FINGERPRINT_SECRET`は32文字未満、`OPENAI_TIMEOUT_SECONDS`は正の整数でない場合も同じように失敗します。`.env.example`の`OPENAI_API_KEY`など秘密系の値はすべて実データから生成していない架空値です。`OPENAI_TIMEOUT_SECONDS=45`は実測にもとづく本番相当値です。
 
-DB接続だけを行うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）は`DB_*`だけを必須にし、`ANALYSIS_FINGERPRINT_SECRET` / `OPENAI_*`を検証しません（`bootstrap/database-config.php`）。API keyの失効対応などでOpenAI設定を空にしても、5分間隔の失効データ削除Cronが起動不能になって解析結果本文が保持期間を越えて残ることがないようにするためです。HTTPアプリ（`bootstrap/config.php`）は従来どおり全項目を必須検証します。
+OpenAIへ送る解析指示本文（system promptと分析ルール本文）は`.env`ではなく設定ファイルで持ちます。`.env`と同じくGit管理対象外です。
+
+```shell
+cp config/analysis-instruction.example.php config/analysis-instruction.php
+```
+
+`config/analysis-instruction.example.php`はローカル開発・テスト・`make check`用の架空値のひな形で、実データを含みません。実行環境ごとに`config/analysis-instruction.php`を用意します（`ANALYSIS_INSTRUCTION_FILE`で別パスへ差し替え可能）。ファイルは`systemPrompt`と`rules`の2つの非空文字列を返す必要があり、欠落・空・不正な場合は内容を出力せずに起動を失敗させます。この指示本文はServer側の固定設定であり、Androidから指定するAPIにはしません。
+
+DB接続だけを行うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）は`DB_*`だけを必須にし、`ANALYSIS_FINGERPRINT_SECRET` / `OPENAI_*` / 解析指示本文の設定ファイルを検証しません（`bootstrap/database-config.php`）。API keyの失効対応などでOpenAI設定を空にしても、5分間隔の失効データ削除Cronが起動不能になって解析結果本文が保持期間を越えて残ることがないようにするためです。HTTPアプリ（`bootstrap/config.php`）は従来どおり全項目を必須検証します。
 
 `ANALYSIS_FINGERPRINT_SECRET`は、DBを読める状態からJournalEntryの内容を候補照合で言い当てられないようにするためのものです（[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照）。ランダム値を1度だけ生成し、**deployを跨いで同じ値を使います**。値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になります。
 
@@ -183,7 +192,7 @@ docker compose run --rm app composer test                # unit + integration（
 - `tests/Unit`: DBを必要としないテスト（設定読み込み、UTC固定、接続失敗時の情報漏洩防止、ルーティングのエラー応答、解析requestの検証、API keyの形式）
 - `tests/Integration`: MySQLコンテナへ実接続するテスト（接続設定、一時マイグレーションによるマイグレーション機構の検証、Hosted解析APIの契約）
 
-`tests/Integration/HostedAnalysisApiTest.php`は、`Analyzer` seamでAI providerを差し替えてAPI境界（認証・検証・idempotency・error契約・保持期間）を検証します。実OpenAI Analyzerは`tests/Unit/OpenAiAnalyzerTest.php`（request構築・入力整形・応答解析・失敗時の扱い）とHosted APIの一部testが、実OpenAIへ接続しないfake transportで検証します。
+`tests/Integration/HostedAnalysisApiTest.php`は、`Analyzer` seamでAI providerを差し替えてAPI境界（認証・検証・idempotency・error契約・保持期間）を検証します。実OpenAI Analyzerは`tests/Unit/OpenAiAnalyzerTest.php`（request構築・入力整形・応答解析・失敗時の扱い）とHosted APIの一部testが、実OpenAIへ接続しないfake transportで検証します。解析指示本文はテスト内で架空値を注入します。
 
 ### 検証環境（`make check`）
 
@@ -195,7 +204,7 @@ make check
 
 - `make check`は`compose.check.yaml`を検証専用のCompose projectで実行します。開発用`compose.yaml`のcontainer・network・volume・host port（8081番）とは別のprojectであり、開発用の`database` / `vendor` volumeを共有しません。
 - 開発用のproject名はComposeがチェックアウト先のディレクトリ名から導出します。検証用のproject名は`journalingpostserver-check-<チェックアウトの絶対パスのhash>`で、ディレクトリ名に依存しません。そのため、このチェックアウトの開発用projectとも、別のチェックアウトの開発用projectとも一致しません。hashは決定的なので`make check-clean`でも同じprojectを対象にできます（`make check` / `make check-clean` は実行前にこれを確認します）。
-- 検証用appコンテナは実`.env`を読み込みません。`.env.example`の架空値だけを`/app/.env`へread-onlyで重ね、Composeの変数展開にも`--env-file .env.example`を使用します。
+- 検証用appコンテナは実`.env`を読み込みません。`.env.example`の架空値だけを`/app/.env`へread-onlyで重ね、Composeの変数展開にも`--env-file .env.example`を使用します。解析指示本文も同様に、架空値の`config/analysis-instruction.example.php`を`config/analysis-instruction.php`へread-onlyで重ねます。
 - 成功・失敗にかかわらず、終了時に検証専用projectのcontainer・network・volumeだけをcleanupします。開発中の環境には影響しません。
 - GitHub Actions（`.github/workflows/ci.yaml`）も同じ`make check`を使用し、加えて`git diff --check`を実行します。
 

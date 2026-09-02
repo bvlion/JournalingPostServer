@@ -13,6 +13,7 @@ use JournalingPostServer\Analysis\AnalysisRequestParser;
 use JournalingPostServer\Analysis\AnalysisRequestRepository;
 use JournalingPostServer\Analysis\Analyzer;
 use JournalingPostServer\Analysis\OpenAi\OpenAiAnalyzer;
+use JournalingPostServer\Analysis\OpenAi\ResponsesTransport;
 use JournalingPostServer\Http\ApiException;
 use JournalingPostServer\Http\CreateAnalysisAction;
 use JournalingPostServer\Tests\Integration\Support\DatabaseTestCase;
@@ -608,7 +609,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         $apiKey = $this->register();
         $transport = new FakeResponsesTransport();
         $transport->willReturn(200, self::openAiResponsesBody());
-        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+        $analyzer = self::openAiAnalyzer($transport);
 
         $first = $this->analyse($apiKey, analyzer: $analyzer);
         $analysis = self::payload($first)['analysis'];
@@ -635,7 +636,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         $apiKey = $this->register();
         $transport = new FakeResponsesTransport();
         $transport->willTimeOut();
-        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+        $analyzer = self::openAiAnalyzer($transport);
 
         $timedOut = $this->analyse($apiKey, analyzer: $analyzer);
 
@@ -677,7 +678,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             429,
             '{"error":{"message":"upstream detail must not leak"}}',
         );
-        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+        $analyzer = self::openAiAnalyzer($transport);
 
         $failed = $this->analyse($apiKey, analyzer: $analyzer);
 
@@ -715,7 +716,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             502,
             '{"error":{"message":"upstream detail must not leak"}}',
         );
-        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+        $analyzer = self::openAiAnalyzer($transport);
 
         $failed = $this->analyse($apiKey, analyzer: $analyzer);
 
@@ -758,7 +759,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         $apiKey = $this->register();
         $transport = new FakeResponsesTransport();
         $transport->willReturn(200, self::openAiResponsesBody());
-        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+        $analyzer = self::openAiAnalyzer($transport);
 
         $response = $this->analyse(
             $apiKey,
@@ -832,7 +833,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     public function testZeroEntriesNeverReachesOpenAi(): void
     {
         $transport = new FakeResponsesTransport();
-        $analyzer = new OpenAiAnalyzer($transport, 'sk-fake-not-a-real-key');
+        $analyzer = self::openAiAnalyzer($transport);
 
         $response = $this->analyse(
             $this->register(),
@@ -1265,6 +1266,20 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         }
 
         return $createApplication($analyzer)->handle($request);
+    }
+
+    /**
+     * 実OpenAI Analyzer。解析指示本文はテスト用の架空値を渡す。
+     */
+    private static function openAiAnalyzer(
+        ResponsesTransport $transport,
+    ): OpenAiAnalyzer {
+        return new OpenAiAnalyzer(
+            $transport,
+            'sk-fake-not-a-real-key',
+            '架空のsystem prompt。実データではない。',
+            "架空の分析ルール本文。実データではない。\n- good: 架空のルール。",
+        );
     }
 
     /**

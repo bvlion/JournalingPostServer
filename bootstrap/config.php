@@ -46,6 +46,70 @@ if (preg_match('/\A[1-9][0-9]*\z/', (string) $openAiTimeoutSeconds) !== 1) {
     );
 }
 
+// OpenAIへ送る解析指示本文（system promptと分析ルール本文）は実行環境の設定
+// から読む。実値はrepositoryへ含めない。既定は config/analysis-instruction.php、
+// `ANALYSIS_INSTRUCTION_FILE` で別パスへ差し替えられる。欠落・空・不正な内容は
+// 値を出力せずに起動を失敗させる（Androidから指定するAPIにはしない）。
+$analysisInstructionFile = $_ENV['ANALYSIS_INSTRUCTION_FILE']
+    ?? $_SERVER['ANALYSIS_INSTRUCTION_FILE']
+    ?? null;
+
+if (!is_string($analysisInstructionFile) || $analysisInstructionFile === '') {
+    $analysisInstructionFile = dirname(__DIR__)
+        . '/config/analysis-instruction.php';
+}
+
+if (!is_file($analysisInstructionFile) || !is_readable($analysisInstructionFile)) {
+    throw new \RuntimeException(
+        'The analysis instruction file is missing or unreadable.',
+    );
+}
+
+// 設定ファイルはPHPとして評価する（配列をreturnさせる）。中身が期待どおりの
+// PHPでない場合（`<?php`前後の地の文・`echo`・パースエラー等）、`require`は
+// その内容やコード断片を標準出力・HTTP応答・ログへ出し得る。出力バッファで
+// 捕捉して破棄し、評価エラーも元メッセージを引き継がずに握りつぶして、ファイル
+// 内容をHTTP応答・標準出力・通常ログ・例外メッセージのどこへも出さずに失敗する。
+ob_start();
+
+try {
+    $analysisInstruction = require $analysisInstructionFile;
+} catch (\Throwable) {
+    ob_end_clean();
+    throw new \RuntimeException(
+        'The analysis instruction file could not be evaluated.',
+    );
+}
+
+$analysisInstructionOutput = ob_get_clean();
+
+if ($analysisInstructionOutput !== '' && $analysisInstructionOutput !== false) {
+    // 捕捉した出力はファイル内容の一部であり得るため、例外へ載せない。
+    throw new \RuntimeException(
+        'The analysis instruction file must not produce any output.',
+    );
+}
+
+$analysisSystemPrompt = is_array($analysisInstruction)
+    ? ($analysisInstruction['systemPrompt'] ?? null)
+    : null;
+$analysisRules = is_array($analysisInstruction)
+    ? ($analysisInstruction['rules'] ?? null)
+    : null;
+
+if (
+    !is_string($analysisSystemPrompt)
+    || !is_string($analysisRules)
+    || trim($analysisSystemPrompt) === ''
+    || trim($analysisRules) === ''
+) {
+    // 内容そのものは例外メッセージへ含めない。
+    throw new \RuntimeException(
+        'The analysis instruction file must return non-empty "systemPrompt" '
+            . 'and "rules" strings.',
+    );
+}
+
 $configuration['analysis'] = [
     // 解析requestのfingerprintを鍵付きにするための秘密値。本番deployを跨いで
     // 同じ値を使う。値が変わると、保持期間内の再送が別内容と判定されて
@@ -55,6 +119,10 @@ $configuration['analysis'] = [
     // 例外メッセージへ出さない。
     'openAiApiKey' => $openAiApiKey,
     'openAiTimeoutSeconds' => (int) $openAiTimeoutSeconds,
+    // OpenAIへ送る解析指示本文。実値をrepository・response・通常ログ・例外
+    // メッセージへ出さない。
+    'systemPrompt' => $analysisSystemPrompt,
+    'analysisRules' => $analysisRules,
 ];
 
 return $configuration;

@@ -21,11 +21,15 @@ use JsonException;
  * Android 側の責務で、Server は `AnalysisRequest::$entries` をそのまま解析材料に
  * する。
  *
+ * 解析指示本文（system promptと分析ルール本文）は実行環境の設定として渡す
+ * （`bootstrap/config.php`が`config/analysis-instruction.php`から読み込む）。
+ * Androidから指定できるAPIにはしない。実値が無い場合は実値を出力せず失敗する。
+ *
  * タイムゾーン変換はしない。entries 0件は既存契約どおりparserが`validation_error`
  * で弾き、ここへ到達しない。
  *
- * secret（API key）とprovider error bodyを、repository・response・通常ログ・例外
- * メッセージへ出さない。
+ * secret（API key）・解析指示本文・provider error bodyを、repository・response・
+ * 通常ログ・例外メッセージへ出さない。
  */
 final class OpenAiAnalyzer implements Analyzer
 {
@@ -37,7 +41,6 @@ final class OpenAiAnalyzer implements Analyzer
     public const MAX_OUTPUT_TOKENS = 800;
     public const VERBOSITY = 'low';
     public const SCHEMA_NAME = 'slack_log_emotion_analysis';
-    public const SYSTEM_PROMPT = 'これはローカル検証用の架空の system prompt です。実データではありません。';
 
     /** 出力の strict JSON Schema。 */
     public const SCHEMA = [
@@ -85,39 +88,29 @@ final class OpenAiAnalyzer implements Analyzer
     ];
 
     /**
-     * user プロンプト先頭へ置く分析ルール本文。
-     *
-     * 1行が長いため、行長の sniff を無効化する。
+     * @param string $systemPrompt OpenAI Responses APIのsystemロールへ渡す固定文。
+     * @param string $analysisRules userプロンプト先頭へ置く分析ルール本文。
      */
-    // phpcs:disable Generic.Files.LineLength.TooLong
-    private const ANALYSIS_RULES = <<<'RULES'
-これはローカル検証・テスト用のダミー指示文です。実データを含みません。
-本番の指示本文は実行環境ごとに config/analysis-instruction.php で設定します。
-このひな形は systemPrompt / rules が非空であることの確認だけに使います。
-
-出力キーと形は OpenAiAnalyzer::SCHEMA が唯一の定義です。ここでは名前だけ挙げます。
-
-- good: 文字列の配列。
-- bad: 文字列の配列。
-- score: 整数。
-- emotion: SCHEMA の enum のいずれか1つ。
-- summary: 文字列。
-- advice: 文字列。
-- tags: 文字列の配列。
-RULES;
-    // phpcs:enable Generic.Files.LineLength.TooLong
-
     public function __construct(
         private ResponsesTransport $transport,
         private string $apiKey,
+        private string $systemPrompt,
+        private string $analysisRules,
     ) {
+        if (trim($this->systemPrompt) === '' || trim($this->analysisRules) === '') {
+            // 実行環境に解析指示本文が設定されていない。実値が無い状態で
+            // OpenAIを呼ばず、値を出力せずに失敗する。
+            throw new \RuntimeException(
+                'The analysis instruction text is not configured.',
+            );
+        }
     }
 
     public function analyze(AnalysisRequest $request): Analysis
     {
         try {
             $body = json_encode(
-                self::buildRequestPayload($request),
+                $this->buildRequestPayload($request),
                 JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE
                     | JSON_UNESCAPED_SLASHES,
             );
@@ -193,15 +186,15 @@ RULES;
      *
      * @return array<string, mixed>
      */
-    public static function buildRequestPayload(AnalysisRequest $request): array
+    public function buildRequestPayload(AnalysisRequest $request): array
     {
         return [
             'model' => self::MODEL,
             'input' => [
-                ['role' => 'system', 'content' => self::SYSTEM_PROMPT],
+                ['role' => 'system', 'content' => $this->systemPrompt],
                 [
                     'role' => 'user',
-                    'content' => self::buildUserPrompt(
+                    'content' => $this->buildUserPrompt(
                         self::buildTranscript($request),
                     ),
                 ],
@@ -273,11 +266,11 @@ RULES;
         return $entry->note ?? '';
     }
 
-    private static function buildUserPrompt(string $transcript): string
+    private function buildUserPrompt(string $transcript): string
     {
         // 分析ルール本文の後ろへ `## Slackのログ` 見出しと対象期間のログ文字列を
-        // 続ける。
-        return self::ANALYSIS_RULES
+        // 続ける。分析ルール本文は実行環境の設定から受け取る。
+        return $this->analysisRules
             . "\n\n## Slackのログ\n"
             . $transcript
             . "\n";

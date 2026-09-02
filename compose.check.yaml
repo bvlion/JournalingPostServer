@@ -13,6 +13,8 @@
 # - 実 .env を読み込まない。Makefileが `.env.example` を `/app/.env` へ
 #   read-only で重ね、Composeの変数展開にも `--env-file .env.example` を
 #   使用する
+# - 実 config/analysis-instruction.php を読み込まない。架空値の
+#   config/analysis-instruction.example.php を同じパスへ read-only で重ねる
 
 services:
   app:
@@ -25,6 +27,7 @@ services:
     volumes:
       - .:/app
       - ./.env.example:/app/.env:ro
+      - ./config/analysis-instruction.example.php:/app/config/analysis-instruction.php:ro
       - vendor:/app/vendor
 
   database:
