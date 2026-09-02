@@ -5,4 +5,7 @@
 /.env
 /.env.*
 !/.env.example
-/config/analysis-instruction.php
+# 実行時の解析指示本文ファイル。旧形式（.php）も含めてignoreし、
+# ひな形（.example.*）だけを追跡する。
+/config/analysis-instruction.*
+!/config/analysis-instruction.example.*

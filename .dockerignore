@@ -4,4 +4,5 @@ vendor
 .env
 .env.*
 !.env.example
-config/analysis-instruction.php
+config/analysis-instruction.*
+!config/analysis-instruction.example.*

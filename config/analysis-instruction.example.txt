@@ -1,0 +1,17 @@
+これはローカル検証・テスト用のダミー system prompt です。実データではありません。
+
+これはローカル検証・テスト用のダミー分析ルール本文です。実データを含みません。
+これをコピーした config/analysis-instruction.txt を直接編集すると、実 OpenAI 解析を
+ローカルで試せます。本番はこのファイルへ、deploy 時に GitHub Secret の本文を復元
+します。このひな形は system prompt と分析ルール本文が非空であることの確認だけに
+使います。
+
+出力キーと形は OpenAiAnalyzer::SCHEMA が唯一の定義です。ここでは名前だけ挙げます。
+
+- good: 文字列の配列。
+- bad: 文字列の配列。
+- score: 整数。
+- emotion: SCHEMA の enum のいずれか1つ。
+- summary: 文字列。
+- advice: 文字列。
+- tags: 文字列の配列。

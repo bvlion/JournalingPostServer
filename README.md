@@ -63,19 +63,24 @@ cp .env.example .env
 | `ANALYSIS_FINGERPRINT_SECRET` | 解析requestのfingerprintを鍵付きにするための秘密値（32文字以上） |
 | `OPENAI_API_KEY` | OpenAI Responses APIのAPI key |
 | `OPENAI_TIMEOUT_SECONDS` | OpenAI呼び出しのtimeout秒数（正の整数）。実測により本番値は `45`（[本番timeoutの決定](docs/hosted-analysis-api.md#timeout)） |
-| `ANALYSIS_INSTRUCTION_FILE` | 任意。解析指示本文の設定ファイルのパス。未指定なら `config/analysis-instruction.php` |
+| `ANALYSIS_INSTRUCTION_FILE` | 任意。解析指示本文ファイルのパス。未指定なら `config/analysis-instruction.txt` |
 
 `ANALYSIS_INSTRUCTION_FILE`以外はすべて必須です。未指定または空の場合は、秘密値を含めずに該当する環境変数名を示して起動を失敗させます。`ANALYSIS_FINGERPRINT_SECRET`は32文字未満、`OPENAI_TIMEOUT_SECONDS`は正の整数でない場合も同じように失敗します。`.env.example`の`OPENAI_API_KEY`など秘密系の値はすべて実データから生成していない架空値です。`OPENAI_TIMEOUT_SECONDS=45`は実測にもとづく本番相当値です。
 
-OpenAIへ送る解析指示本文（system promptと分析ルール本文）は`.env`ではなく設定ファイルで持ちます。`.env`と同じくGit管理対象外です。
+OpenAIへ送る解析指示本文（system promptと分析ルール本文）だけは非公開値です。`.env`ではなく実行時のプレーンテキストファイルで持ち、`bootstrap/config.php`が読み取ります。**1行目をsystem prompt、残りを分析ルール本文**として扱います（間の空行は任意）。既定のパスは`config/analysis-instruction.txt`（`.env`と同じくGit管理対象外。旧`.php`形式も含めてignore）で、`ANALYSIS_INSTRUCTION_FILE`で別パス（`.env`と並べた非公開ディレクトリなど）へ差し替えられます。ファイルが無い・分析ルール本文が無い場合は、内容を出力せずに起動を失敗させます。この指示本文はServer側の固定設定であり、Androidから指定するAPIにはしません。
+
+**ローカルで調整する場合**は、ひな形をコピーして直接編集し、実OpenAI解析を試せます。private repositoryは不要です。
 
 ```shell
-cp config/analysis-instruction.example.php config/analysis-instruction.php
+cp config/analysis-instruction.example.txt config/analysis-instruction.txt
+# config/analysis-instruction.txt を編集する
 ```
 
-`config/analysis-instruction.example.php`はローカル開発・テスト・`make check`用の架空値のひな形で、実データを含みません。実行環境ごとに`config/analysis-instruction.php`を用意します（`ANALYSIS_INSTRUCTION_FILE`で別パスへ差し替え可能）。ファイルは`systemPrompt`と`rules`の2つの非空文字列を返す必要があり、欠落・空・不正な場合は内容を出力せずに起動を失敗させます。この指示本文はServer側の固定設定であり、Androidから指定するAPIにはしません。
+`config/analysis-instruction.example.txt`はローカル開発・テスト・`make check`用の架空値のひな形で、実データを含みません。
 
-DB接続だけを行うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）は`DB_*`だけを必須にし、`ANALYSIS_FINGERPRINT_SECRET` / `OPENAI_*` / 解析指示本文の設定ファイルを検証しません（`bootstrap/database-config.php`）。API keyの失効対応などでOpenAI設定を空にしても、5分間隔の失効データ削除Cronが起動不能になって解析結果本文が保持期間を越えて残ることがないようにするためです。HTTPアプリ（`bootstrap/config.php`）は従来どおり全項目を必須検証します。
+**本番へ供給する場合**は、GitHub Secretに解析指示本文（プレーンテキスト）だけを保持し、deploy時にその本文を実行環境の`config/analysis-instruction.txt`（または`ANALYSIS_INSTRUCTION_FILE`のパス）へ復元します。Secretの保管形式（base64等）やその復元はdeploy側の責務で、アプリはSecretを直接扱いません。
+
+DB接続だけを行うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）は`DB_*`だけを必須にし、`ANALYSIS_FINGERPRINT_SECRET` / `OPENAI_*` / 解析指示本文を検証しません（`bootstrap/database-config.php`）。API keyの失効対応などでOpenAI設定を空にしても、5分間隔の失効データ削除Cronが起動不能になって解析結果本文が保持期間を越えて残ることがないようにするためです。HTTPアプリ（`bootstrap/config.php`）は従来どおり全項目を必須検証します。
 
 `ANALYSIS_FINGERPRINT_SECRET`は、DBを読める状態からJournalEntryの内容を候補照合で言い当てられないようにするためのものです（[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照）。ランダム値を1度だけ生成し、**deployを跨いで同じ値を使います**。値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になります。
 
@@ -204,7 +209,7 @@ make check
 
 - `make check`は`compose.check.yaml`を検証専用のCompose projectで実行します。開発用`compose.yaml`のcontainer・network・volume・host port（8081番）とは別のprojectであり、開発用の`database` / `vendor` volumeを共有しません。
 - 開発用のproject名はComposeがチェックアウト先のディレクトリ名から導出します。検証用のproject名は`journalingpostserver-check-<チェックアウトの絶対パスのhash>`で、ディレクトリ名に依存しません。そのため、このチェックアウトの開発用projectとも、別のチェックアウトの開発用projectとも一致しません。hashは決定的なので`make check-clean`でも同じprojectを対象にできます（`make check` / `make check-clean` は実行前にこれを確認します）。
-- 検証用appコンテナは実`.env`を読み込みません。`.env.example`の架空値だけを`/app/.env`へread-onlyで重ね、Composeの変数展開にも`--env-file .env.example`を使用します。解析指示本文も同様に、架空値の`config/analysis-instruction.example.php`を`config/analysis-instruction.php`へread-onlyで重ねます。
+- 検証用appコンテナは実`.env`を読み込みません。`.env.example`の架空値だけを`/app/.env`へread-onlyで重ね、Composeの変数展開にも`--env-file .env.example`を使用します。解析指示本文も同様に、架空値の`config/analysis-instruction.example.txt`を`config/analysis-instruction.txt`へread-onlyで重ねます。
 - 成功・失敗にかかわらず、終了時に検証専用projectのcontainer・network・volumeだけをcleanupします。開発中の環境には影響しません。
 - GitHub Actions（`.github/workflows/ci.yaml`）も同じ`make check`を使用し、加えて`git diff --check`を実行します。
 
