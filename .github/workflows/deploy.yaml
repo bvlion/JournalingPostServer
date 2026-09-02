@@ -45,17 +45,18 @@ jobs:
       # 秘密値（SSH 接続情報・解析指示本文）はすべて標準入力経由でリモートシェルへ
       # 渡し、SSH のコマンドライン引数には一切載せない。リモートホストのプロセス
       # 一覧（ps）へ現れないようにするため。解析指示本文は base64 で 1 行にして
-      # 搬送し、bin/deploy-remote.sh が実行時ファイルへ平文で書き戻す。
-      # 実行するデプロイ手順は bin/deploy-remote.sh を参照。
+      # 搬送し、bin/deploy-remote.sh が新リリースの実行時ファイルへ平文で書き戻す。
+      # 実行するデプロイ手順（リリース作成 → 検証 → 公開先の原子的切替）は
+      # bin/deploy-remote.sh を参照。
       - name: Deploy to production
         env:
           DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
           DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_ROOT: ${{ secrets.DEPLOY_ROOT }}
           DEPLOY_COMPOSER_PATH: ${{ secrets.DEPLOY_COMPOSER_PATH }}
           DEPLOY_PUBLIC_PATH: ${{ secrets.DEPLOY_PUBLIC_PATH }}
-          DEPLOY_INSTRUCTION_PATH: ${{ secrets.DEPLOY_INSTRUCTION_PATH }}
+          DEPLOY_BASE_URL: ${{ secrets.DEPLOY_BASE_URL }}
           ANALYSIS_INSTRUCTION: ${{ secrets.ANALYSIS_INSTRUCTION }}
           TAG_NAME: ${{ github.ref_name }}
           EXPECTED_COMMIT: ${{ steps.resolve.outputs.commit }}
@@ -68,10 +69,10 @@ jobs:
           fi
 
           {
-            printf 'DEPLOY_PATH=%q\n' "$DEPLOY_PATH"
+            printf 'DEPLOY_ROOT=%q\n' "$DEPLOY_ROOT"
             printf 'DEPLOY_COMPOSER_PATH=%q\n' "$DEPLOY_COMPOSER_PATH"
             printf 'DEPLOY_PUBLIC_PATH=%q\n' "$DEPLOY_PUBLIC_PATH"
-            printf 'DEPLOY_INSTRUCTION_PATH=%q\n' "$DEPLOY_INSTRUCTION_PATH"
+            printf 'DEPLOY_BASE_URL=%q\n' "$DEPLOY_BASE_URL"
             printf 'ANALYSIS_INSTRUCTION_B64=%q\n' "$(printf '%s' "$ANALYSIS_INSTRUCTION" | base64 | tr -d '\n')"
             printf 'TAG_NAME=%q\n' "$TAG_NAME"
             printf 'EXPECTED_COMMIT=%q\n' "$EXPECTED_COMMIT"

@@ -165,13 +165,13 @@ JournalEntry本文はDBへ保存しません。解析結果本文もServerの原
 docker compose run --rm app composer prune
 ```
 
-本番では、XServer Cronから5分間隔で実行します。Cronの作業ディレクトリはアプリ本体の配置ディレクトリとは限らないため、移動してから実行します（`<アプリ本体の配置ディレクトリ>`は実際のパスに置き換えます）。
+本番では、XServer Cronから5分間隔で実行します。Cronの作業ディレクトリは配置ディレクトリとは限らないため、移動してから実行します。公開中リリースを指す `current` symlink経由にして、リリースを切り替えても追従するようにします（`<deploy-root>`は「本番デプロイ」で決めた実際のパスに置き換えます）。
 
 ```shell
-cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
+cd <deploy-root>/current && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
 ```
 
-出力は削除件数だけで、本文やinstallation識別子をログへ残しません。このCronは`DB_*`だけを必要とし、`OPENAI_*` / `ANALYSIS_FINGERPRINT_SECRET`が欠落・空でも実行できます。
+出力は削除件数だけで、本文やinstallation識別子をログへ残しません。このCronは`DB_*`だけを必要とし、`OPENAI_*` / `ANALYSIS_FINGERPRINT_SECRET`が欠落・空でも実行できます。`current` の実体が入れ替わっても、`bin/prune-expired-analyses.php` は各リリースへ同梱されるため動作します。
 
 マイグレーション機構そのものの動作確認は、`tests/Integration/MigrationRunnerTest.php`が一時ディレクトリへその場限りのマイグレーションを生成し、適用・記録・再実行・ファイル名順の適用を検証します。動作確認だけを目的とした永続テーブルは`database/migrations`へ置きません。
 
@@ -233,41 +233,42 @@ make check-clean
 - サーバーからOpenAI（`api.openai.com`）へのHTTPS outboundが必要（AI解析。curlで呼ぶ）
 - `.env`に`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`（実測により`45`）を設定する（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）
 - Hosted APIはHTTPSでのみ提供する。平文HTTPのrequestは`.htaccess`でリダイレクトせず拒否する（Bearer API keyとJournalEntry本文を平文HTTPで送らせない）
-- アプリ本体はドキュメントルート外へ配置し、`public_html`には`public/index.php`へのシンボリックリンクと`public/.htaccess`のコピーだけを置く
+- アプリ本体はドキュメントルート外の `<deploy-root>/releases/<tag>/` へリリース単位で配置し、`public_html`には公開中リリースを指す `current` symlink経由の`public/index.php`へのシンボリックリンクと`public/.htaccess`のコピーだけを置く（「本番デプロイ」）
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
-- XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を5分間隔で実行する。Cronの用途はこれだけである
+- XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を`<deploy-root>/current`から5分間隔で実行する。Cronの用途はこれだけである
 
 **Issue #13でこのServer実装をXServer本番環境へ配置しました。** 本番DBへ既存migrationを適用し、本番 `.env`（`DB_*` / `ANALYSIS_FINGERPRINT_SECRET` / `OPENAI_API_KEY` / `OPENAI_TIMEOUT_SECONDS=45`）を設定し、失効データ削除の5分Cronを設定しました。HTTPS経路で `POST /v1/installations` の201、Bearer認証した `POST /v1/analyses` の実OpenAI解析200、同一 `Idempotency-Key` 再送での初回と同一response、Apache経由の `Authorization` ヘッダー転送、平文HTTPの403拒否、`bin/prune-expired-analyses.php` の本番DB接続をServer単体smoke testで確認済みです。web SAPIは PHP 8.5.9 / `display_errors` OFF、`max_execution_time` は 30秒 のままです。Linux版PHPではcurl・stream・DB query等の待機時間が `max_execution_time` の計測対象に含まれないため、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較しません。通常の成功ケースが本番web request内で完了することは確認済みで、意図的なprovider timeout / fault injectionはIssue #13の完了条件に含めていません。timeout実測（`OPENAI_TIMEOUT_SECONDS = 45` の決定）は、配置前に本番と分離した検証専用ディレクトリで実施したものです。
 
 ## 本番デプロイ
 
-`v*` 形式のGitタグ（例: `v1.0.0`）をpushすると、GitHub Actions（`.github/workflows/deploy.yaml`）がそのタグの指すcommitをXServer本番環境へデプロイします。`main` へのpushやPull Requestではデプロイされません。初回の環境構築（「初回デプロイ」節）は手動で行い、以降の更新デプロイは `v*` タグのpushだけで完了します。実行履歴はGitHub Actionsのrunとして残ります。
+`v*` 形式のGitタグ（例: `v1.0.0`）をpushすると、GitHub Actions（`.github/workflows/deploy.yaml`）がそのタグの指すcommitをXServer本番環境へリリースします。`main` へのpushやPull Requestではデプロイされません。初回の環境構築（「初回セットアップ」節）は手動で行い、以降のリリースは `v*` タグのpushだけで完了します。実行履歴はGitHub Actionsのrunとして残ります。
 
-### 配置の考え方
+### 配置の考え方（リリースディレクトリ + 公開先symlink）
 
-- ドキュメントルート（`public_html`）には公開してよいファイルだけを置きます（`public/index.php` へのシンボリックリンクと `public/.htaccess` のコピー）。
-- アプリ本体は `public_html` 外の専用ディレクトリ（以下 `<app-directory>`）へ、**このpublic repositoryのgit checkout** として配置します。自動デプロイはこのcheckout上で `git fetch` と `git checkout --detach` を行い、タグの指すcommitへ切り替えます。実行時点の `origin/main` は使いません。
-- `.env` と解析指示本文ファイル（既定 `config/analysis-instruction.txt`）はGit管理対象外です。`git checkout` はこれらのuntrackedファイルに触れないため、デプロイで失われません。`OPENAI_API_KEY` や `ANALYSIS_FINGERPRINT_SECRET` を含む `.env` の中身をworkflowは一切変更しません。
-- 解析指示本文だけは、GitHub Secret `ANALYSIS_INSTRUCTION` に保持した本文をデプロイのたびに実行時ファイルへ書き戻します。Secretの搬送形式（Actions→SSH間はbase64）とその復元はdeploy側の責務で、アプリはSecretを直接扱いません（「環境設定」節）。
+XServerのアカウントホーム配下・ドキュメントルート外に、デプロイ専用のルート（以下 `<deploy-root>`）を1つ置きます。
 
-### 初回デプロイ
+```
+<deploy-root>/
+  repo/                      このpublic repositoryのgit clone（デプロイが fetch に使う）
+  shared/.env                恒久的な秘密設定。デプロイは読み書きしない
+  releases/<tag>/            タグごとの完成リリース（git checkout + vendor + 解析指示本文）
+  current -> releases/<tag>  公開中リリースへのsymlink（初回リリース前は存在しない）
+```
 
-1. `<app-directory>` を作成し、このリポジトリをcloneします。
+- ドキュメントルート（`public_html`）には2つだけを置きます。`index.php` は `<deploy-root>/current/public/index.php` へのシンボリックリンク、`.htaccess` は同じ場所からコピーした通常ファイルです。`current` を差し替えると、次のリクエストから新しいリリースが読まれます（PHPの `__DIR__` はsymlinkの実体側で解決されるため、`public/index.php` はコード変更なしで動きます）。
+- デプロイは、対象タグのコード・`composer.lock` どおりの依存関係・解析指示本文の復元・マイグレーション適用・起動検証まで **新しい `releases/<tag>/` で完成させてから**、`current` symlinkを原子的に切り替えます。切替前に失敗した場合、稼働中のリリースには一切影響しません。
+- 切替後の未認証スモークチェックに失敗した場合は、直前のリリースへ自動で `current` を戻します。コード側の問題が後から判明した場合は、`bin/rollback-release.sh` で任意の過去リリースへ `current` を戻せます。
+- `shared/.env`（`DB_*` / `OPENAI_API_KEY` / `ANALYSIS_FINGERPRINT_SECRET` 等）はデプロイが作成・変更・削除しません。各リリースへは `.env` symlinkとして貼るだけです。
+- 解析指示本文だけは、GitHub Secret `ANALYSIS_INSTRUCTION` に保持した本文を、デプロイのたびに **新しいリリース内の** 実行時ファイル（既定 `config/analysis-instruction.txt`）へ書き戻します。搬送形式（Actions→SSH間はbase64）と復元はdeploy側の責務で、アプリはSecretを直接扱いません（「環境設定」節）。
+- 本番DBは全リリースで共有します。マイグレーションは新リリースへ戻しても旧リリースが動作不能にならない範囲（additive-only）に限ります（`database/migrations/README.md`）。
+
+### 初回セットアップ
+
+1. `<deploy-root>` の骨組みを作り、このリポジトリを `repo/` へcloneします。
 
     ```shell
-    mkdir -p <app-directory>
-    cd <app-directory>
-    git clone https://github.com/bvlion/JournalingPostServer.git .
-    ```
-
-    Issue #13の手動配置で `<app-directory>` に既にファイルがある場合は、その場でgit管理下へ移します（既存の `.env` ・ `config/analysis-instruction.txt` はtracked対象外なので残ります）。
-
-    ```shell
-    cd <app-directory>
-    git init
-    git remote add origin https://github.com/bvlion/JournalingPostServer.git
-    git fetch origin
-    git checkout -f main
+    mkdir -p <deploy-root>/releases <deploy-root>/shared
+    git clone https://github.com/bvlion/JournalingPostServer.git <deploy-root>/repo
     ```
 
 2. 専用のComposerを、検証済みチェックサムで非公開ツールディレクトリへ配置します（共有Composerは使用・更新しない）。ツールディレクトリの絶対パスは、貼り付け後の対話プロンプトで入力します。
@@ -304,42 +305,30 @@ make check-clean
     )
     ```
 
-3. 本番用の依存関係をインストールします（開発用を含めず `composer.lock` どおり）。`<tools-directory>` は手順2で入力したパスと同じにします。
+3. `<deploy-root>/shared/.env` を用意します。`.env.example` をコピーし「環境設定」節に従って本番値を設定します。`ANALYSIS_INSTRUCTION_FILE` は設定しません（リリース内の既定パスを使うため）。
 
     ```shell
-    cd <app-directory>
-    /opt/php-8.5.5/bin/php <tools-directory>/composer.phar install --no-dev --optimize-autoloader --classmap-authoritative
+    cp <deploy-root>/repo/.env.example <deploy-root>/shared/.env
+    chmod 600 <deploy-root>/shared/.env
     ```
 
-4. `.env` を配置します。`.env.example` をコピーし「環境設定」節に従って本番値を設定します。
+4. デプロイ専用のSSH鍵ペアを作成し、公開鍵をXServer側の対象アカウントの `~/.ssh/authorized_keys` へ登録します。
+
+5. 「必要なGitHub Secrets」をすべて登録します（秘密値を表示しない手順はPRコメントに掲載）。
+
+6. `v*` タグを作成・pushして最初のリリースを作ります（「通常のリリース手順」）。`<deploy-root>/current` と `releases/<tag>/` が作られます。
+
+7. 公開先を新方式へ向けます。既存の `public_html` を新しい `current` 経由へ切り替えます。
 
     ```shell
-    cp .env.example .env
-    chmod 600 .env
+    ln -sfn <deploy-root>/current/public/index.php <public_html>/index.php
+    cp <deploy-root>/current/public/.htaccess <public_html>/.htaccess
     ```
 
-5. 解析指示本文ファイルを配置します。自動デプロイがここをGitHub Secret `ANALYSIS_INSTRUCTION` の本文で毎回上書きするため、内容は初回にダミーでも構いませんが、ファイル自体は必要です。既定パスは `<app-directory>/config/analysis-instruction.txt`。
+8. 失効データ削除Cronの作業ディレクトリを `current` 経由へ更新します（「失効データの削除」節）。
 
     ```shell
-    cp config/analysis-instruction.example.txt config/analysis-instruction.txt
-    chmod 600 config/analysis-instruction.txt
-    ```
-
-    `.env` と並べた別パスへ置く場合は、`.env` の `ANALYSIS_INSTRUCTION_FILE` にそのパスを設定し、後述の `DEPLOY_INSTRUCTION_PATH` Secretも同じパスにします。
-
-6. `public_html` 側に公開ファイルを配置します（`index.php` はシンボリックリンク、`.htaccess` は通常ファイル）。
-
-    ```shell
-    ln -s <app-directory>/public/index.php <public_html-directory>/index.php
-    cp <app-directory>/public/.htaccess <public_html-directory>/.htaccess
-    ```
-
-7. 権限を設定します（ディレクトリ755 / ファイル644 / `.env` と解析指示本文ファイルは600が目安。実行ユーザーに合わせて調整）。
-
-8. マイグレーションを適用します。
-
-    ```shell
-    /opt/php-8.5.5/bin/php bin/migrate.php
+    cd <deploy-root>/current && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
     ```
 
 9. 疎通確認します（「疎通確認」節）。
@@ -348,23 +337,30 @@ make check-clean
     bin/check-deploy-connectivity.sh https://<domain>
     ```
 
+Issue #13 の手動配置（単一ディレクトリ）からの移行手順は、PR #3 のコメントに秘密値を表示しない形でまとめています。旧ディレクトリは、新 `current` で数リリース安定するまで残しておけます。
+
 ### 自動デプロイ（`v*` タグpush）
 
 `v*` 形式のタグをpushすると、`.github/workflows/deploy.yaml` が次を実行します（本番ホスト側の処理は `bin/deploy-remote.sh`）。
 
-1. 本番 `<app-directory>` にtracked変更が無いことを確認します。ある場合は上書き・resetせずデプロイを失敗させます。
-2. pushされたタグをfetchし、そのタグが最終的に指すcommit（annotated / lightweightのいずれでも同じ）へ本番checkoutを `git checkout --detach` で切り替えます。
-3. GitHub Secret `ANALYSIS_INSTRUCTION` の解析指示本文を、`DEPLOY_INSTRUCTION_PATH` の実行時ファイルへ平文で書き戻します。1行目（system prompt）または分析ルール本文が空なら失敗させます。内容はデプロイログへ出しません。
-4. 専用Composerと `/opt/php-8.5.5/bin/php` で `composer install --no-dev --optimize-autoloader --classmap-authoritative` を実行します。
-5. `/opt/php-8.5.5/bin/php bin/migrate.php` で未適用マイグレーションを適用します。
-6. `<app-directory>/public/.htaccess` を `public_html` 側へ上書きコピーします。`index.php` のシンボリックリンクは初回作成時のものを再利用します。
-7. `bin/check-deploy-connectivity.sh` で未認証の `POST /v1/analyses` が401、未定義パスへのGETが404であることを確認します。1件でも異なればworkflow全体を失敗させます。
+1. `<deploy-root>/repo` で `origin` と対象タグをfetchし、タグが指すcommitがworkflowの確定したcommitと一致することを確認します。
+2. **順序ガード**: `current` が指す稼働中リリースのcommitより古い（= 稼働中commitの祖先。同一を含む）タグは拒否します。`concurrency` は同時実行を防ぐだけでFIFO順を保証しないため、遅れて実行された古いタグで本番が巻き戻らないようにします。
+3. `releases/<tag>/` を作り直し、`repo` からcloneしてタグのcommitへ `git checkout --detach` します。
+4. `shared/.env` をリリースへsymlinkします。
+5. GitHub Secret `ANALYSIS_INSTRUCTION` の解析指示本文を、リリース内の実行時ファイルへ平文で書き戻します（内容はログへ出しません）。1行目（空白のみも不可）または分析ルール本文が空なら失敗させます。
+6. 専用Composerと `/opt/php-8.5.5/bin/php` で `composer install --no-dev --optimize-autoloader --classmap-authoritative` をリリースへ実行します。
+7. `/opt/php-8.5.5/bin/php bin/migrate.php` で未適用マイグレーションを本番DBへ適用します。
+8. `/opt/php-8.5.5/bin/php bin/check-config.php` で、アプリ本体と同じ設定読み込み（`bootstrap/config.php`）によりリリースが起動可能なことを検証します。解析指示本文の判定は実行時と完全に一致します。ここまで通ってはじめて公開先を切り替えます。
+9. `releases/<tag>/public/.htaccess` を `public_html` へコピーし、`current` symlinkを新リリースへ原子的に切り替えます。
+10. `DEPLOY_BASE_URL` が設定されていれば、未認証の `POST /v1/analyses` が401であることを確認します。401でないHTTP応答が返った場合は、直前のリリースへ `current` を自動で戻してworkflowを失敗させます（ホストから本番URLへ到達できず結果が得られない場合は戻さず、次のGitHub Actions側チェックに委ねます）。
+11. `bin/check-deploy-connectivity.sh`（GitHub Actions側）で未認証の `POST /v1/analyses` が401、未定義パスへのGETが404であることを確認します。
+12. 過去リリースは新しい順に `DEPLOY_KEEP_RELEASES` 個（既定5）を残し、それ以外を削除します（`current` は常に保持）。
 
-本番の `.env` はworkflowから作成・コピー・上書き・削除しません。SSHの秘密鍵・接続先・絶対パス・本番URL・解析指示本文は、いずれもGitHub Secretsから取得し、リポジトリへは記録しません。同一本番環境への同時デプロイは `concurrency` グループで直列化します。SSH host key verificationは `DEPLOY_SSH_KNOWN_HOSTS` を使い必ず有効にし、`StrictHostKeyChecking=no` 等での無効化は行いません。
+本番の `shared/.env` はworkflowから作成・コピー・上書き・削除しません。SSHの秘密鍵・接続先・絶対パス・本番URL・解析指示本文は、いずれもGitHub Secretsから取得し、リポジトリへは記録しません。同一本番環境への同時デプロイは `concurrency` グループで直列化します。SSH host key verificationは `DEPLOY_SSH_KNOWN_HOSTS` を使い必ず有効にし、`StrictHostKeyChecking=no` 等での無効化は行いません。
 
 #### 通常のリリース手順
 
-CIを通過した `main` のcommitへタグを作成してpushするだけで、そのcommitがそのまま本番へ反映されます。
+CIを通過した `main` のcommitへタグを作成してpushするだけで、そのcommitがそのまま本番へリリースされます。
 
 ```shell
 git tag v1.0.0
@@ -380,24 +376,25 @@ git push origin v1.0.0
 | `DEPLOY_SSH_USER` | SSH接続ユーザー名 |
 | `DEPLOY_SSH_PRIVATE_KEY` | デプロイ専用のSSH秘密鍵 |
 | `DEPLOY_SSH_KNOWN_HOSTS` | 接続先のhost keyを検証するknown_hostsエントリ |
-| `DEPLOY_PATH` | 本番アプリ本体（`<app-directory>`）の絶対パス |
+| `DEPLOY_ROOT` | デプロイ専用ルート（`<deploy-root>`）の絶対パス |
 | `DEPLOY_COMPOSER_PATH` | 本番に配置済みの専用 `composer.phar` の絶対パス |
 | `DEPLOY_PUBLIC_PATH` | 公開ディレクトリ（`public_html`）の絶対パス |
-| `DEPLOY_INSTRUCTION_PATH` | 解析指示本文を書き戻す実行時ファイルの絶対パス（既定運用では `<app-directory>/config/analysis-instruction.txt`） |
 | `ANALYSIS_INSTRUCTION` | OpenAIへ送る解析指示本文（プレーンテキスト。1行目 = system prompt、2行目以降 = 分析ルール本文） |
-| `DEPLOY_BASE_URL` | デプロイ後の未認証疎通確認に使う本番URL（例: `https://<domain>`） |
+| `DEPLOY_BASE_URL` | デプロイ後の未認証スモークチェック / 疎通確認に使う本番URL（例: `https://<domain>`） |
 
-#### 初回設定（もちおさん側の作業）
-
-1. デプロイ専用のSSH鍵ペアを作成し、公開鍵をXServer側の対象アカウントの `~/.ssh/authorized_keys` へ登録します。
-2. 上記「初回デプロイ」を実施し、`<app-directory>` をgit checkoutとして用意します。
-3. 上記の必要なGitHub Secretsをすべて登録します（値の作り方は本節末尾の手順を参照）。
-4. `v*` 形式のタグを作成・pushし、GitHub Actionsのデプロイが成功することを確認します。
+解析指示本文をリリース内の既定パス以外へ置きたい場合は、`bin/deploy-remote.sh` の `DEPLOY_INSTRUCTION_RELPATH`（リリース相対）を変更し、`shared/.env` の `ANALYSIS_INSTRUCTION_FILE` を同じ相対解決になるよう揃えます。既定のままで問題ありません。
 
 ### ロールバック
 
-- **アプリコード**: 直前の安定タグへ戻すため、その安定commitに新しい `v*` タグ（例: `v1.0.1`）を付けてpushし、通常の自動デプロイで反映します。緊急時は本番 `<app-directory>` で直接 `git checkout --detach <安定commit>` → その時点の `composer.lock` で `composer install` を再実行します。
-- **マイグレーション**: `bin/migrate.php` にロールバックはありません。データベースのバックアップからの復元、または追加のマイグレーションで是正し、適用済みファイルは変更しません。
+- **アプリコード**: `bin/rollback-release.sh` を本番ホストで実行し、`current` を既存の過去リリースへ原子的に戻します（省略時は1つ前）。リリースディレクトリはそのまま再利用するため、`composer install` の再実行は不要です。
+
+    ```shell
+    DEPLOY_ROOT=<deploy-root> DEPLOY_PUBLIC_PATH=<public_html> bin/rollback-release.sh
+    # 版を指定する場合: ... bin/rollback-release.sh v1.0.0
+    ```
+
+    より新しいcommitへ「進める」形の是正は、新しい `v*` タグをpushします（順序ガードにより古いタグの再pushは拒否されます）。
+- **マイグレーション**: `bin/migrate.php` にロールバックはありません。additive-only運用のため旧リリースは動作を続けられます。データ面の是正が必要な場合は、バックアップからの復元または追加のマイグレーションで行い、適用済みファイルは変更しません。
 - **公開停止**: `public_html/index.php` のシンボリックリンクを外すか、`.htaccess` を退避すれば公開を止められます。
 
 ## 未実装のもの

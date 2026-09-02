@@ -41,10 +41,11 @@ Issue #13で、この構成のServer実装をXServer本番環境へ配置しま�
 ## 配置構成
 
 - ドメインのドキュメントルートは、当該ドメインの`public_html`ディレクトリである。
-- アプリ本体（`bootstrap`・`src`・`bin`・`database`・`vendor`・`composer.*`・`.env`）は、アカウントホーム配下かつドキュメントルート外の専用ディレクトリへ配置する。このディレクトリはpublic repository（`https://github.com/bvlion/JournalingPostServer.git`）のgit checkoutであり、`v*`タグpushの自動デプロイはこのcheckout上で`git fetch` + `git checkout --detach`を行う（`README.md`「本番デプロイ」）。`.env`と解析指示本文ファイルはGit管理対象外のため、`git checkout`では失われない。
-- 解析指示本文は実行時のプレーンテキストファイル（既定 `config/analysis-instruction.txt`）から読む。`.env` と同じ非公開ディレクトリへ置く（`ANALYSIS_INSTRUCTION_FILE` で `.env` と並べた別パスも指定できる）。旧 `.php` 形式も含めて Git 管理対象外。`config/analysis-instruction.example.txt` は架空値のひな形で、実データを含まない。
-- ドキュメントルートへ配置するのは、`public/index.php`へのシンボリックリンクと、`public/.htaccess`をコピーした通常ファイルだけである。
-- ドキュメントルート内のシンボリックリンク経由でも、PHPの`__DIR__`は実体側のディレクトリで解決されるため、`public/index.php`はコード変更なしで利用できる。
+- アカウントホーム配下かつドキュメントルート外に、デプロイ専用ルート`<deploy-root>`を1つ置く。構成は`<deploy-root>/repo`（public repository `https://github.com/bvlion/JournalingPostServer.git` のgit clone）、`<deploy-root>/shared/.env`（恒久的な秘密設定）、`<deploy-root>/releases/<tag>/`（タグごとの完成リリース。`bootstrap`・`src`・`bin`・`database`・`vendor`・`composer.*`・`.env` symlink・解析指示本文ファイルを含む）、`<deploy-root>/current`（公開中リリースへのsymlink）。詳細は`README.md`「本番デプロイ」。
+- `v*`タグpushの自動デプロイは、新しい`releases/<tag>/`を完成させてから`current`を原子的に切り替える。`shared/.env`はデプロイが読み書きせず、各リリースへ`.env` symlinkとして貼るだけ。
+- 解析指示本文は実行時のプレーンテキストファイル（既定 `config/analysis-instruction.txt`）から読む。デプロイが各リリース内のこのパスへ GitHub Secret から復元する。旧 `.php` 形式も含めて Git 管理対象外。`config/analysis-instruction.example.txt` は架空値のひな形で、実データを含まない。
+- ドキュメントルートへ配置するのは、`<deploy-root>/current/public/index.php`へのシンボリックリンクと、そこからコピーした`public/.htaccess`の通常ファイルだけである。
+- ドキュメントルート内のシンボリックリンク経由でも、PHPの`__DIR__`は実体側のディレクトリで解決されるため、`current`を切り替えると次のリクエストから新リリースが読まれる。`public/index.php`はコード変更なしで利用できる。
 - 実際のアカウント名、ドメイン、絶対パス、認証情報はリポジトリへ記録しない。
 
 ## Apache
@@ -80,31 +81,33 @@ web `max_execution_time` は本番サーバーパネルで **30秒**（PHP 8.5.9
 ## SSHとデプロイ
 
 - XServerはSSH接続を利用できる。デプロイ専用のSSH鍵ペアを1つ作成し、公開鍵を対象アカウントの`~/.ssh/authorized_keys`へ登録する。
-- `v*`形式のタグをpushすると、GitHub Actions（`.github/workflows/deploy.yaml`）がこの鍵でXServerへSSH接続し、本番checkoutをタグの指すcommitへ切り替える。実行内容は`bin/deploy-remote.sh`（tracked変更の確認 → タグfetch → `git checkout --detach` → 解析指示本文の復元 → `composer install --no-dev` → `bin/migrate.php` → `public/.htaccess`反映）。
+- `v*`形式のタグをpushすると、GitHub Actions（`.github/workflows/deploy.yaml`）がこの鍵でXServerへSSH接続し、`bin/deploy-remote.sh`を実行する。処理は「新`releases/<tag>/`をclone → `shared/.env` symlink → 解析指示本文をSecretから復元 → `composer install --no-dev` → `bin/migrate.php` → `bin/check-config.php`で起動検証 → `public/.htaccess`反映 → `current`を原子的に切替 → 切替後スモークチェック（失敗時は直前リリースへ自動復帰） → 古いリリースを整理」。
+- 実行順に依存せず「最終版」を保証するため、`current`が指す稼働中リリースのcommitより古いタグのデプロイは`bin/deploy-remote.sh`が拒否する。`concurrency`は同時実行の防止のみでFIFO順を保証しないため。
+- コード側の問題が後から判明した場合は、利用者が`bin/rollback-release.sh`を本番ホストで実行し、`current`を過去リリースへ戻す（DBは戻さない。additive-only運用が前提）。
 - SSH接続情報・絶対パス・本番URL・解析指示本文はすべてGitHub Secretsに置き、リポジトリ・Issue・PR・デプロイログへ記録しない。必要なSecretの一覧は`README.md`「必要なGitHub Secrets」。
 - 秘密値はSSHのコマンドライン引数へ載せず、標準入力経由でリモートシェルへ渡す（リモートホストの`ps`へ現れないようにするため）。host key検証は`DEPLOY_SSH_KNOWN_HOSTS`で常に有効にし、`StrictHostKeyChecking=no`等での無効化はしない。
 - 同一本番環境への同時デプロイはworkflowの`concurrency`グループで直列化する。
-- AI agentはこのSSH接続を行わない（`AGENTS.md`「本番環境・SSHの安全ルール」）。鍵の生成・登録、Secret登録、初回デプロイ、タグpushはいずれも利用者が実行する。
+- AI agentはこのSSH接続を行わない（`AGENTS.md`「本番環境・SSHの安全ルール」）。鍵の生成・登録、Secret登録、初回セットアップ、タグpush、ロールバックはいずれも利用者が実行する。
 
 ## Cron
 
 - XServer Cronを利用できる。
 - 失効した解析metadataと解析結果の引き渡しバッファの削除に使用する。解析requestの処理中にも削除するが、requestが来なくなった期間はそれだけでは動かないため、解析結果本文が保持期間を越えて残らないようにするにはCronが必要である。
 - `bin/prune-expired-analyses.php`は`DB_*`だけを必要とする（`bootstrap/database-config.php`）。`OPENAI_API_KEY`の失効対応などで`OPENAI_*` / `ANALYSIS_FINGERPRINT_SECRET`を空にしても、また解析指示本文が供給されていなくても、このCronは起動でき、失効した本文の削除保証を維持する。
-- Cronの作業ディレクトリはアプリ本体の配置ディレクトリである保証がない。スクリプトのパスを相対で書かず、配置ディレクトリへ移動してから実行する。5分間隔で次を実行する（`<アプリ本体の配置ディレクトリ>`は「配置構成」で決めた実際のパスに置き換える。実際のパスはリポジトリへ記録しない）。
+- Cronの作業ディレクトリは配置ディレクトリである保証がない。スクリプトのパスを相対で書かず、公開中リリースを指す`current` symlink経由で移動してから実行する。リリースを切り替えても追従する。5分間隔で次を実行する（`<deploy-root>`は「配置構成」で決めた実際のパスに置き換える。実際のパスはリポジトリへ記録しない）。
 
 ```shell
-cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
+cd <deploy-root>/current && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
 ```
 
 - Cronの用途はこの削除だけである。ServerはPush予約やscheduler機能を持たない。
-- Issue #13 の本番配置で、この削除Cronを5分間隔で設定済みである。`bin/prune-expired-analyses.php` を本番DBへ接続して手動相当で実行し、正常終了することも確認した。
+- Issue #13 の本番配置で、この削除Cronを5分間隔で設定済みである。`bin/prune-expired-analyses.php` を本番DBへ接続して手動相当で実行し、正常終了することも確認した。リリースディレクトリ方式へ移行する際は、Cronの`cd`先を`<deploy-root>/current`へ更新する。
 
 ## 秘密情報
 
-- `.env`はドキュメントルート外のアプリ本体ディレクトリへ置き、Web経由で読めない位置に配置する。解析指示本文ファイル（`config/analysis-instruction.txt`）も同様に配置する。
+- `.env`はドキュメントルート外の`<deploy-root>/shared/.env`へ置き、Web経由で読めない位置に配置する。各リリースへは`.env` symlinkとして貼る。解析指示本文ファイル（既定 `config/analysis-instruction.txt`）は各リリース内に置く。
 - `OPENAI_API_KEY`はOpenAI Responses APIのAPI keyである。実際の値はリポジトリ・Issue・PR・デプロイログへ記録しない。
-- OpenAIへ送る解析指示本文（system promptと分析ルール本文）は非公開値である。GitHub Secret `ANALYSIS_INSTRUCTION` にprompt本文だけを保持する（PHPコードやファイル全体は入れない）。`v*`タグpushの自動デプロイ（`bin/deploy-remote.sh`）が、この本文を実行環境の`config/analysis-instruction.txt`（`DEPLOY_INSTRUCTION_PATH` Secret。`ANALYSIS_INSTRUCTION_FILE`と揃える）へプレーンテキストで復元する。Actions→SSH間はbase64で搬送するが、アプリはSecretも搬送形式も扱わない。1行目または分析ルール本文が空ならデプロイを失敗させる。実際の内容はリポジトリ・Issue・PR・デプロイログ・通常ログ・error responseへ記録しない。ファイルが無い・分析ルール本文が無い場合は、内容を出力せずに起動を失敗させる。
+- OpenAIへ送る解析指示本文（system promptと分析ルール本文）は非公開値である。GitHub Secret `ANALYSIS_INSTRUCTION` にprompt本文だけを保持する（PHPコードやファイル全体は入れない）。`v*`タグpushの自動デプロイ（`bin/deploy-remote.sh`）が、この本文を新リリース内の`config/analysis-instruction.txt`（`DEPLOY_INSTRUCTION_RELPATH`。既定はアプリの既定パスと一致）へプレーンテキストで復元する。稼働中リリースのファイルには触れないため、内容が不正でも稼働中には影響しない。Actions→SSH間はbase64で搬送するが、アプリはSecretも搬送形式も扱わない。1行目（空白のみを含む）または分析ルール本文が空ならデプロイを失敗させ、`bin/check-config.php`がアプリと同じ`bootstrap/config.php`で切替前に再検証する。実際の内容はリポジトリ・Issue・PR・デプロイログ・通常ログ・error responseへ記録しない。ファイルが無い・分析ルール本文が無い場合は、内容を出力せずに起動を失敗させる。
 - `OPENAI_TIMEOUT_SECONDS`は秘密値ではない。実測により `45`（「外部通信（OpenAI）」参照）。
 - `ANALYSIS_FINGERPRINT_SECRET`は解析requestのfingerprintを鍵付きにするための秘密値である。32文字以上のランダム値を1度だけ生成し、本番deployを跨いで同じ値を使う。`/opt/php-8.5.5/bin/php -r 'echo base64_encode(random_bytes(48)), PHP_EOL;'`などで生成する。
 - この値が変わると、保持期間（30分）内の再送が別内容と判定されて`409 idempotency_key_reuse`になる。無停止で入れ替える手順は用意していないため、必要な場合は影響が保持期間内に収まることを前提に行う。
@@ -120,4 +123,4 @@ cd <アプリ本体の配置ディレクトリ> && /opt/php-8.5.5/bin/php bin/pr
 ## 行っていないこと
 
 - 意図的な provider timeout / fault injection の実証（遅いケースで Server 側 `504` が外側 timeout より先に発火することの確認。Issue #13 の完了条件外）
-- AI agent による本番環境への接続・デプロイ実行。デプロイ機構の実装と `make check` までの検証はrepository側で行い、鍵の生成・Secret登録・初回デプロイ・タグpushは利用者が実行する（`AGENTS.md`）。
+- AI agent による本番環境への接続・デプロイ実行。デプロイ機構の実装と、production非接続で確認できる範囲の検証（`make check`、deploy scriptの構文・shellcheck、release作成/切替/失敗時挙動のローカル模擬）はrepository側で行い、鍵の生成・Secret登録・初回セットアップ・タグpush・ロールバックは利用者が実行する（`AGENTS.md`）。

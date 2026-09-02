@@ -80,8 +80,10 @@ final class ConfigurationTest extends TestCase
     }
 
     /**
-     * ファイルが無い・system prompt行だけで分析ルール本文が無い場合は、内容を
-     * 出力せずに起動を失敗させる。例外メッセージへ本文を載せない。
+     * ファイルが無い・system prompt行だけで分析ルール本文が無い・1行目が空白
+     * だけの場合は、内容を出力せずに起動を失敗させる。例外メッセージへ本文を
+     * 載せない。1行目の空白のみ拒否は、デプロイ側の事前検証（`bin/deploy-remote.sh`）
+     * と判定を一致させるためにテストで固定する。
      */
     public function testMissingOrMalformedAnalysisInstructionFileFailsToBoot(): void
     {
@@ -91,10 +93,15 @@ final class ConfigurationTest extends TestCase
         $systemPromptOnlyFile = tempnam(sys_get_temp_dir(), 'instr');
         file_put_contents($systemPromptOnlyFile, $marker);
 
+        $blankSystemPromptFile = tempnam(sys_get_temp_dir(), 'instr');
+        file_put_contents($blankSystemPromptFile, "   \n\n" . $marker);
+
         $missingPath = sys_get_temp_dir() . '/does-not-exist-' . uniqid() . '.txt';
 
         try {
-            foreach ([$missingPath, $systemPromptOnlyFile] as $path) {
+            foreach (
+                [$missingPath, $systemPromptOnlyFile, $blankSystemPromptFile] as $path
+            ) {
                 $_ENV['ANALYSIS_INSTRUCTION_FILE']
                     = $_SERVER['ANALYSIS_INSTRUCTION_FILE'] = $path;
 
@@ -126,6 +133,7 @@ final class ConfigurationTest extends TestCase
             }
         } finally {
             unlink($systemPromptOnlyFile);
+            unlink($blankSystemPromptFile);
             self::restoreAnalysisInstructionFile($saved);
         }
     }
