@@ -73,6 +73,14 @@ if [ "$NEW_COMMIT" != "$EXPECTED_COMMIT" ]; then
     exit 1
 fi
 
+# リリース対象は PR・CI・merge を経た main の commit に限る。タグが
+# origin/main から到達できない（未マージ／未レビュー）commit を指す場合は
+# ここで拒否する。workflow 側でも同じ確認を早期に行う。
+if ! git -C "$REPO_DIR" merge-base --is-ancestor "$NEW_COMMIT" origin/main; then
+    echo "Deploy aborted: tag ${TAG_NAME} points at a commit that is not on origin/main (merge it through a PR first)." >&2
+    exit 1
+fi
+
 PREVIOUS_RELEASE=""
 if [ -L "$CURRENT_LINK" ] && [ -d "$CURRENT_LINK" ]; then
     PREVIOUS_RELEASE="$(cd "$CURRENT_LINK" && pwd -P)"

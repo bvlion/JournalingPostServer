@@ -22,10 +22,28 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # main への ancestry 判定に main の履歴が必要なため、履歴を
+          # 切り詰めずに取得する。
+          fetch-depth: 0
+
+      # リリース対象は PR・CI・merge を経た main の commit に限る。タグが
+      # 未マージのブランチ上の commit を指していても push だけでこの workflow は
+      # 起動するため、ここで origin/main から到達可能なことを確認し、満たさない
+      # 場合は SSH 接続前にデプロイを止める。bin/deploy-remote.sh も本番ホスト側で
+      # 同じ確認を行う。
+      - name: Verify the tag is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "Deploy aborted: ${GITHUB_REF_NAME} is not on origin/main. Merge it through a PR first." >&2
+            exit 1
+          fi
 
       # actions/checkout 後の HEAD を、デプロイ対象 commit として確定する。
       # bin/deploy-remote.sh は本番ホスト側で解決したタグの commit がこの値と
-      # 一致することを確認してから checkout を切り替える。
+      # 一致することを確認してから公開先を切り替える。
       - name: Resolve target commit
         id: resolve
         run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -49,6 +67,7 @@ jobs:
       # 実行するデプロイ手順（リリース作成 → 検証 → 公開先の原子的切替）は
       # bin/deploy-remote.sh を参照。
       - name: Deploy to production
+        id: deploy
         env:
           DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
@@ -86,10 +105,51 @@ jobs:
               "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
               bash -s
 
+      # 本番ホスト側（bin/deploy-remote.sh）の切替後スモークチェックは、
+      # ホストから公開URLへ到達できない場合に「結果不明」で先へ進む。この
+      # GitHub Actions 側の確認は外部からの経路で 401 / 404 を検証する。
       - name: Unauthenticated connectivity check
+        id: connectivity
+        if: always() && steps.deploy.outcome == 'success'
         env:
           DEPLOY_BASE_URL: ${{ secrets.DEPLOY_BASE_URL }}
         run: bin/check-deploy-connectivity.sh
+
+      # 公開先の切替は成功したが、この GitHub Actions 側の確認が明確な失敗を
+      # 検出した場合（外部からの 500 / 404 等）、bin/rollback-release.sh を
+      # SSH 経由で実行して直前リリースへ current を戻す。deploy step 自体が
+      # 失敗した場合は bin/deploy-remote.sh が既に中止／自動復帰しているため、
+      # ここは動かさない。
+      - name: Roll back on connectivity failure
+        if: always() && steps.deploy.outcome == 'success' && steps.connectivity.outcome == 'failure'
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_ROOT: ${{ secrets.DEPLOY_ROOT }}
+          DEPLOY_PUBLIC_PATH: ${{ secrets.DEPLOY_PUBLIC_PATH }}
+          DEPLOY_BASE_URL: ${{ secrets.DEPLOY_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          {
+            printf 'DEPLOY_ROOT=%q\n' "$DEPLOY_ROOT"
+            printf 'DEPLOY_PUBLIC_PATH=%q\n' "$DEPLOY_PUBLIC_PATH"
+            cat bin/rollback-release.sh
+          } | ssh \
+              -i "$HOME/.ssh/deploy_key" \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -o StrictHostKeyChecking=yes \
+              -o IdentitiesOnly=yes \
+              -p "$DEPLOY_SSH_PORT" \
+              "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
+              bash -s
+
+          echo "Rolled back after a failed connectivity check; re-verifying the restored release."
+          bin/check-deploy-connectivity.sh || true
+
+          # 自動復帰したデプロイは調査が必要なため、run は失敗のままにする。
+          exit 1
 
       - name: Remove SSH key
         if: always()

@@ -82,7 +82,9 @@ web `max_execution_time` は本番サーバーパネルで **30秒**（PHP 8.5.9
 
 - XServerはSSH接続を利用できる。デプロイ専用のSSH鍵ペアを1つ作成し、公開鍵を対象アカウントの`~/.ssh/authorized_keys`へ登録する。
 - `v*`形式のタグをpushすると、GitHub Actions（`.github/workflows/deploy.yaml`）がこの鍵でXServerへSSH接続し、`bin/deploy-remote.sh`を実行する。処理は「新`releases/<tag>/`をclone → `shared/.env` symlink → 解析指示本文をSecretから復元 → `composer install --no-dev` → `bin/migrate.php` → `bin/check-config.php`で起動検証 → `public/.htaccess`反映 → `current`を原子的に切替 → 切替後スモークチェック（失敗時は直前リリースへ自動復帰） → 古いリリースを整理」。
+- リリース対象は`origin/main`から到達可能な（PR・CI・mergeを経た）commitに限る。未マージのcommitを指すタグは、workflow（`Verify the tag is on main`）と`bin/deploy-remote.sh`の両方で拒否する。
 - 実行順に依存せず「最終版」を保証するため、`current`が指す稼働中リリースのcommitより古いタグのデプロイは`bin/deploy-remote.sh`が拒否する。`concurrency`は同時実行の防止のみでFIFO順を保証しないため。
+- 本番ホスト側の切替後スモークチェックがホストから公開URLへ到達できず結果不明のときは、GitHub Actions側の疎通確認（外部経路）が明確な失敗を検出した場合に、workflowが`bin/rollback-release.sh`をSSH経由で実行して直前リリースへ戻す。切替済みの不良リリースが`current`に残らないようにするため。
 - コード側の問題が後から判明した場合は、利用者が`bin/rollback-release.sh`を本番ホストで実行し、`current`を過去リリースへ戻す（DBは戻さない。additive-only運用が前提）。
 - SSH接続情報・絶対パス・本番URL・解析指示本文はすべてGitHub Secretsに置き、リポジトリ・Issue・PR・デプロイログへ記録しない。必要なSecretの一覧は`README.md`「必要なGitHub Secrets」。
 - 秘密値はSSHのコマンドライン引数へ載せず、標準入力経由でリモートシェルへ渡す（リモートホストの`ps`へ現れないようにするため）。host key検証は`DEPLOY_SSH_KNOWN_HOSTS`で常に有効にし、`StrictHostKeyChecking=no`等での無効化はしない。
