@@ -11,6 +11,7 @@ use JournalingPostServer\Http\AuthenticationMiddleware;
 use JournalingPostServer\Http\CreateAnalysisAction;
 use JournalingPostServer\Http\ErrorHandler;
 use JournalingPostServer\Http\JsonResponse;
+use JournalingPostServer\Http\PrivacyPolicyAction;
 use JournalingPostServer\Http\RegisterInstallationAction;
 use JournalingPostServer\Installation\InstallationRepository;
 use Psr\Http\Message\ResponseInterface;
@@ -76,14 +77,33 @@ return static function (?Analyzer $analyzer = null) use ($configuration): App {
         ),
     )->add(new AuthenticationMiddleware($installations));
 
+    // プライバシーポリシーの公開ページ。AndroidアプリとPlay Consoleが参照する
+    // 通常の公開URL。本文は resources/privacy-policy.md でMarkdown管理する。
+    // Hosted API（/v1）とは別で、認証もJSONも伴わない。
+    $app->get(
+        '/privacy-policy',
+        new PrivacyPolicyAction(
+            dirname(__DIR__) . '/resources/privacy-policy.md',
+        ),
+    );
+
     $app->add(
         static function (
             ServerRequestInterface $request,
             RequestHandlerInterface $handler,
         ): ResponseInterface {
-            return $handler
-                ->handle($request)
-                ->withHeader('Content-Type', JsonResponse::CONTENT_TYPE);
+            $response = $handler->handle($request);
+
+            // Hosted APIの応答はJSONへ揃える。ハンドラーが明示的にContent-Type
+            // を設定している場合（プライバシーポリシーページのHTML等）は尊重する。
+            if ($response->hasHeader('Content-Type')) {
+                return $response;
+            }
+
+            return $response->withHeader(
+                'Content-Type',
+                JsonResponse::CONTENT_TYPE,
+            );
         },
     );
 

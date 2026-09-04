@@ -41,11 +41,12 @@ Issue #13で、この構成のServer実装をXServer本番環境へ配置しま�
 ## 配置構成
 
 - ドメインのドキュメントルートは、当該ドメインの`public_html`ディレクトリである。
-- アカウントホーム配下かつドキュメントルート外に、デプロイ専用ルート`<deploy-root>`を1つ置く。構成は`<deploy-root>/repo`（public repository `https://github.com/bvlion/JournalingPostServer.git` のgit clone）、`<deploy-root>/shared/.env`（恒久的な秘密設定）、`<deploy-root>/releases/<tag>/`（タグごとの完成リリース。`bootstrap`・`src`・`bin`・`database`・`vendor`・`composer.*`・`.env` symlink・解析指示本文ファイルを含む）、`<deploy-root>/current`（公開中リリースへのsymlink）、`<deploy-root>/previous`（直前のデプロイ開始時に稼働していたリリースへのsymlink。rollbackの既定の戻し先）。詳細は`README.md`「本番デプロイ」。
+- アカウントホーム配下かつドキュメントルート外に、デプロイ専用ルート`<deploy-root>`を1つ置く。構成は`<deploy-root>/repo`（public repository `https://github.com/bvlion/JournalingPostServer.git` のgit clone）、`<deploy-root>/shared/.env`（恒久的な秘密設定）、`<deploy-root>/releases/<tag>/`（タグごとの完成リリース。`bootstrap`・`src`・`bin`・`database`・`resources`・`vendor`・`composer.*`・`.env` symlink・解析指示本文ファイルを含む）、`<deploy-root>/current`（公開中リリースへのsymlink）、`<deploy-root>/previous`（直前のデプロイ開始時に稼働していたリリースへのsymlink。rollbackの既定の戻し先）。詳細は`README.md`「本番デプロイ」。
 - `v*`タグpushの自動デプロイは、新しい`releases/<tag>/`を完成させてから`current`を原子的に切り替える。`shared/.env`はデプロイが読み書きせず、各リリースへ`.env` symlinkとして貼るだけ。
 - 解析指示本文は実行時のプレーンテキストファイル（既定 `config/analysis-instruction.txt`）から読む。デプロイが各リリース内のこのパスへ GitHub Secret から復元する。旧 `.php` 形式も含めて Git 管理対象外。`config/analysis-instruction.example.txt` は架空値のひな形で、実データを含まない。
 - ドキュメントルートへ配置するのは、`<deploy-root>/current/public/index.php`へのシンボリックリンクと、そこからコピーした`public/.htaccess`の通常ファイルだけである。
 - ドキュメントルート内のシンボリックリンク経由でも、PHPの`__DIR__`は実体側のディレクトリで解決されるため、`current`を切り替えると次のリクエストから新リリースが読まれる。`public/index.php`はコード変更なしで利用できる。
+- プライバシーポリシーの公開ページ（`GET /privacy-policy`）は同じ`public/index.php`が処理する。本文`resources/privacy-policy.md`は各リリースへ`git checkout`で同梱されるため、追加の配置作業や事前生成は不要である。AndroidアプリとPlay Consoleは`https://<本番ドメイン>/privacy-policy`を参照する。
 - 実際のアカウント名、ドメイン、絶対パス、認証情報はリポジトリへ記録しない。
 
 ## Apache
@@ -54,6 +55,7 @@ Issue #13で、この構成のServer実装をXServer本番環境へ配置しま�
 - `Authorization`ヘッダーは追加設定なしではPHPへ到達しない。`public/.htaccess`のRewriteで`HTTP_AUTHORIZATION`へ転送する。これはHosted APIの匿名installation認証（`Authorization: Bearer <API key>`）の前提である。
 - 転送値は`index.php`への内部リダイレクトを経て`REDIRECT_HTTP_AUTHORIZATION`として届くことがある。`public/index.php`が両方を受け取れるようにしている。Issue #13の本番配置後smoke testで、Bearer認証した`POST /v1/analyses`が`401 unauthorized`にならず`200`を返すことを確認し、Apache経由の`Authorization`転送が成立している。
 - Hosted APIはHTTPSでのみ提供する。Bearer API keyとJournalEntry本文が平文で流れないようにするためである。XServerの無料独自SSLでドメインにHTTPSを有効化する。`public/.htaccess`は平文HTTPのrequestをHTTPSへリダイレクトせず、Apache側で拒否する（`%{HTTPS}`が`on`でなければ`403`）。リダイレクトしてもrequestに含むBearer API keyとJournalEntry本文は既に平文で送信済みであり、AndroidもHTTPからのリダイレクト追従を行わず最初からHTTPSへ直接接続する（[Hosted解析API契約](hosted-analysis-api.md)）。Issue #13の本番配置後smoke testで、平文HTTPのHosted requestが処理されず`403`で拒否されることを確認した。
+- この平文HTTP拒否は`.htaccess`全体に効くため、プライバシーポリシーページ（`GET /privacy-policy`）もHTTPSでのみ配信される。Play Consoleとリンク先URLはいずれも`https://`で登録する。
 
 ## 外部通信（OpenAI）
 

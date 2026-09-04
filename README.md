@@ -20,6 +20,7 @@ API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめて�
 | データベース | MySQL 5.7系 |
 | 環境変数 | vlucas/phpdotenv |
 | マイグレーション | SQLファイルベースの自作ランナー（`bin/migrate.php`） |
+| Markdown変換 | michelf/php-markdown（プライバシーポリシーページのHTML生成のみ） |
 | 時刻の扱い | UTC固定（設定項目にしない） |
 | テスト | PHPUnit（unit / integration） |
 | コーディング規約 | PHP_CodeSniffer（PSR-12） |
@@ -44,6 +45,21 @@ API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめて�
 `POST /v1/analyses`は`Authorization: Bearer <API key>`と`Idempotency-Key`を必要とします。request / responseのschema、error契約、retry / idempotency、保持期間は[Hosted解析API契約](docs/hosted-analysis-api.md)を参照してください。
 
 `POST /v1/analyses`は認証・検証・idempotencyを通したうえでOpenAI Responses APIを呼び、7項目を整形したプレーンテキストを返します。provider利用不能は`503 analysis_unavailable`、送信後に結果を確定できない失敗（timeout等）は`504 analysis_timeout` / `500 internal_error`で、後者はclaimを解放せず二重課金を避けます。
+
+## プライバシーポリシー
+
+淡香のプライバシーポリシーはこのサーバーから公開します。
+
+| 項目 | 内容 |
+| --- | --- |
+| 本文 | `resources/privacy-policy.md`（Markdown）。更新は通常のGit履歴として残る |
+| 公開URL | `GET /privacy-policy` がその本文をHTMLページとして返す |
+| 変換 | リクエスト内でMarkdown→HTMLへ変換する（michelf/php-markdown）。事前生成・生成物のcommitはしない |
+| 参照元 | Androidアプリと Play Console が `https://<本番ドメイン>/privacy-policy` を参照する |
+
+Hosted API（`/v1`）とは独立で、認証もJSON契約も伴わず、DBとOpenAIにも依存しません。公開は他の経路と同じくHTTPSのみで、平文HTTPは`public/.htaccess`が拒否します。本文をブラウザで確認するには、ローカル実行中に `http://127.0.0.1:8081/privacy-policy` を開きます。
+
+生HTMLはそのまま出力せず、リンク先も`http(s)` / `mailto` / ページ内アンカーに限ります。本文はリポジトリ管理の信頼できる内容ですが、公開ページのため多層で扱います。
 
 ## 環境設定
 
