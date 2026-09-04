@@ -2,11 +2,13 @@
 #
 # 副作用のないデプロイ後の疎通確認。
 #
-# 次の 2 つを確認する。いずれも DB 書き込み・OpenAI 呼び出しなどの副作用を
+# 次の 3 つを確認する。いずれも DB 書き込み・OpenAI 呼び出しなどの副作用を
 # 起こさない。
 #   1. Authorization ヘッダー無しの POST /v1/analyses が HTTP 401 を返す
 #      （ルーティングが届き、Bearer 認証が未認証リクエストを拒否している）。
 #   2. 未定義パスへの GET が HTTP 404 を返す（ルーティングと JSON エラー応答）。
+#   3. GET /privacy-policy が HTTP 200 を返す（Android アプリと Play Console が
+#      参照する公開プライバシーポリシーページが配信できている）。
 #
 # 確認できるのはここまで。Authorization ヘッダーが .htaccess の Rewrite で PHP
 # まで転送されているか、実 OpenAI 解析が通るかは、正しい Bearer API key を使う
@@ -51,6 +53,7 @@ check() {
 
 check POST /v1/analyses 401
 check GET /v1/does-not-exist 404
+check GET /privacy-policy 200
 
 if [ "${FAILED}" -ne 0 ]; then
     echo "Unauthenticated connectivity check failed." >&2
