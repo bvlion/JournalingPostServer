@@ -9,3 +9,6 @@
 # ひな形（.example.*）だけを追跡する。
 /config/analysis-instruction.*
 !/config/analysis-instruction.example.*
+
+# ローカル解析比較に使うJournalEntry入力（実データを含み得る）。
+/local-analysis-request.json
