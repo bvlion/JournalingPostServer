@@ -32,7 +32,7 @@ final class OpenAiAnalyzerTest extends TestCase
 架空の分析ルール本文。実データではない。
 
 - good: 架空のルール。
-- tags: 架空のルール。
+- emotion: 架空のルール。
 RULES;
 
     private FakeResponsesTransport $transport;
@@ -68,17 +68,25 @@ RULES;
         self::assertTrue($format['strict']);
         self::assertSame(
             [
-                'good', 'bad', 'score', 'emotion', 'summary', 'advice', 'tags',
+                'good', 'bad', 'emotion', 'summary', 'advice',
             ],
             $format['schema']['required'],
         );
         self::assertFalse($format['schema']['additionalProperties']);
+        self::assertSame(3, $format['schema']['properties']['good']['maxItems']);
+        self::assertSame(
+            ['type', 'score'],
+            $format['schema']['properties']['emotion']['required'],
+        );
         self::assertSame(
             ['中立', 'ポジティブ', 'ネガティブ'],
-            $format['schema']['properties']['emotion']['enum'],
+            $format['schema']['properties']['emotion']['properties']['type']['enum'],
         );
-        self::assertSame(3, $format['schema']['properties']['good']['maxItems']);
-        self::assertSame(5, $format['schema']['properties']['tags']['maxItems']);
+        self::assertSame(
+            100,
+            $format['schema']['properties']['emotion']['properties']['score']['maximum'],
+        );
+        self::assertArrayNotHasKey('tags', $format['schema']['properties']);
     }
 
     /**
@@ -225,19 +233,17 @@ RULES;
     }
 
     /**
-     * OpenAIの構造化7項目を欠落させずAnalysis.textへ変換する。
+     * OpenAIの構造化5項目を欠落させずAnalysis.textへ変換する。
      * good / badは箇条書き、空配列は「なし」。JSON文字列をそのままbodyにしない。
      */
-    public function testStructuredResultIsFormattedWithoutLosingAnyOfTheSevenItems(): void
+    public function testStructuredResultIsFormattedWithoutLosingAnyOfTheFiveItems(): void
     {
         $this->transport->willReturn(200, self::responsesBody([
             'good' => ['朝の散歩ができた', '家族と夕食をとった'],
             'bad' => [],
-            'score' => 71,
-            'emotion' => 'ポジティブ',
             'summary' => '日中は在宅で作業し、夜に家族と過ごした。',
             'advice' => '在宅作業の合間に短い休憩を挟むと良いかもしれません。',
-            'tags' => ['在宅作業', '家族', '散歩'],
+            'emotion' => ['type' => 'ポジティブ', 'score' => 71],
         ]));
 
         $analysis = $this->analyzer()->analyze(self::request());
@@ -250,8 +256,6 @@ RULES;
             $text,
         );
         self::assertStringContainsString("【嫌だったこと】\nなし", $text);
-        self::assertStringContainsString("【感情スコア】\n71 / 100", $text);
-        self::assertStringContainsString("【感情タイプ】\nポジティブ", $text);
         self::assertStringContainsString(
             "【要約】\n日中は在宅で作業し、夜に家族と過ごした。",
             $text,
@@ -261,31 +265,32 @@ RULES;
             $text,
         );
         self::assertStringContainsString(
-            "【タグ】\n在宅作業, 家族, 散歩",
+            "【感情】\nポジティブ（71 / 100）",
             $text,
         );
+        self::assertStringNotContainsString('【タグ】', $text);
         // JSON文字列をそのまま返さない。
         self::assertStringNotContainsString('{"good"', $text);
-        self::assertStringNotContainsString('"score"', $text);
     }
 
-    public function testEmptyTagsBecomeNashi(): void
+    public function testEmotionIncludesTypeAndScore(): void
     {
         $this->transport->willReturn(200, self::responsesBody([
             'good' => [],
             'bad' => ['寝不足だった'],
-            'score' => 40,
-            'emotion' => 'ネガティブ',
             'summary' => '架空の要約。',
             'advice' => '架空の助言。',
-            'tags' => [],
+            'emotion' => ['type' => 'ネガティブ', 'score' => 40],
         ]));
 
         $text = $this->analyzer()->analyze(self::request())->text;
 
         self::assertStringContainsString("【良かったこと】\nなし", $text);
         self::assertStringContainsString("【嫌だったこと】\n- 寝不足だった", $text);
-        self::assertStringContainsString("【タグ】\nなし", $text);
+        self::assertStringContainsString(
+            "【感情】\nネガティブ（40 / 100）",
+            $text,
+        );
     }
 
     /**
@@ -408,11 +413,21 @@ RULES;
             '{}',
             '{"output":[]}',
             self::wrapOutputText('これはJSONではない'),
-            self::wrapOutputText('{"good":["x"],"bad":[],"score":"NaN"}'),
+            self::wrapOutputText('{"good":["x"],"bad":[],"summary":42}'),
             self::responsesBody([
-                'good' => [], 'bad' => [], 'score' => 10, 'emotion' => '中立',
+                'good' => [], 'bad' => [],
+                'emotion' => ['type' => '不明', 'score' => 50],
                 'summary' => 'x', 'advice' => 'x',
-                // tags 欠落
+            ]),
+            self::responsesBody([
+                'good' => [], 'bad' => [],
+                'emotion' => ['type' => '中立', 'score' => 101],
+                'summary' => 'x', 'advice' => 'x',
+            ]),
+            self::responsesBody([
+                'good' => [], 'bad' => [],
+                'summary' => 'x', 'advice' => 'x',
+                // emotion 欠落
             ]),
         ];
 
@@ -534,8 +549,9 @@ RULES;
 
     /**
      * @return array{
-     *     good: list<string>, bad: list<string>, score: int, emotion: string,
-     *     summary: string, advice: string, tags: list<string>
+     *     good: list<string>, bad: list<string>,
+     *     emotion: array{type: string, score: int}, summary: string,
+     *     advice: string
      * }
      */
     private static function structuredResult(): array
@@ -543,11 +559,9 @@ RULES;
         return [
             'good' => ['架空の良かったこと'],
             'bad' => [],
-            'score' => 60,
-            'emotion' => '中立',
+            'emotion' => ['type' => '中立', 'score' => 60],
             'summary' => '架空の要約。',
             'advice' => '架空の助言。',
-            'tags' => ['架空タグ'],
         ];
     }
 

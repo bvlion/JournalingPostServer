@@ -44,7 +44,7 @@ API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめて�
 
 `POST /v1/analyses`は`Authorization: Bearer <API key>`と`Idempotency-Key`を必要とします。request / responseのschema、error契約、retry / idempotency、保持期間は[Hosted解析API契約](docs/hosted-analysis-api.md)を参照してください。
 
-`POST /v1/analyses`は認証・検証・idempotencyを通したうえでOpenAI Responses APIを呼び、7項目を整形したプレーンテキストを返します。provider利用不能は`503 analysis_unavailable`、送信後に結果を確定できない失敗（timeout等）は`504 analysis_timeout` / `500 internal_error`で、後者はclaimを解放せず二重課金を避けます。
+`POST /v1/analyses`は認証・検証・idempotencyを通したうえでOpenAI Responses APIを呼び、良かったこと / 嫌だったこと / 感情（タイプと0〜100のスコア） / 要約 / AI アドバイスの5項目を整形したプレーンテキストを返します。provider利用不能は`503 analysis_unavailable`、送信後に結果を確定できない失敗（timeout等）は`504 analysis_timeout` / `500 internal_error`で、後者はclaimを解放せず二重課金を避けます。
 
 ## プライバシーポリシー
 
@@ -93,6 +93,17 @@ cp config/analysis-instruction.example.txt config/analysis-instruction.txt
 ```
 
 `config/analysis-instruction.example.txt`はローカル開発・テスト・`make check`用の架空値のひな形で、実データを含みません。
+
+同じJournalEntry入力で解析指示を比較する場合は、APIのinstallation登録やidempotencyを経由せず、ローカル比較専用CLIからOpenAIを呼び出します。入力は`POST /v1/analyses`と同じrequest JSONです。ひな形を別ファイルへコピーして固定し、解析指示だけを編集して同じコマンドを繰り返してください。CLIはDBへ接続せず、結果本文を標準出力にだけ表示します。入力・prompt・結果をファイルやDBへ自動保存しません。
+
+```shell
+cp config/local-analysis-request.example.json local-analysis-request.json
+docker compose run --rm --no-deps app \
+  php bin/analyze-local.php local-analysis-request.json
+# config/analysis-instruction.txt を調整し、同じコマンドを再実行する
+```
+
+`local-analysis-request.json`には実際のJournalEntryが含まれ得るため、Git管理対象外です。比較結果を残す必要がある場合も、実データをリポジトリ・Issue・PR・通常ログへ記録しないでください。
 
 **本番へ供給する場合**は、GitHub Secretに解析指示本文（プレーンテキスト）だけを保持し、deploy時にその本文を実行環境の`config/analysis-instruction.txt`（または`ANALYSIS_INSTRUCTION_FILE`のパス）へ復元します。Secretの保管形式（base64等）やその復元はdeploy側の責務で、アプリはSecretを直接扱いません。
 

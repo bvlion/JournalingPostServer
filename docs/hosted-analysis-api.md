@@ -188,7 +188,7 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 
 Android側`AnalysisResult`が必要とする「対象期間」「解析日時」「解析結果」はこの応答から作れます。「解析方法 / 種別」はAndroid側が持つ区分（Hosted / Custom Webhook）であり、Serverは指定しません。`model`は補足情報です。
 
-振り返り本文を単一の`text`にしているのは、Android側`AnalysisResult`が本文を1つのプレーンテキストとして持つためです。`text`には良かったこと / 嫌だったこと / 感情スコア / 感情タイプ / 要約 / AI アドバイス / タグの7項目を固定順で整形して入れます（good / badは箇条書き、空なら「なし」）。将来の構造化はフィールド追加（互換）で行います。
+振り返り本文を単一の`text`にしているのは、Android側`AnalysisResult`が本文を1つのプレーンテキストとして持つためです。`text`には良かったこと / 嫌だったこと / 感情 / 要約 / AI アドバイスの5項目を固定順で整形して入れます（good / badは箇条書き、空なら「なし」）。将来の構造化はフィールド追加（互換）で行います。
 
 ## AI provider（OpenAI）
 
@@ -196,7 +196,7 @@ Hosted解析はOpenAI Responses APIで行います（`JournalingPostServer\Analy
 
 - endpoint: `POST https://api.openai.com/v1/responses`（curl拡張で呼び出す。OpenAI SDKは追加しない）
 - model: `gpt-5.6-luna` / reasoning effort `none` / `max_output_tokens` 800 / `text.verbosity` `low`
-- `text.format`: strict JSON Schema（`slack_log_emotion_analysis`）。出力は good / bad / score / emotion / summary / advice / tags の7項目
+- `text.format`: strict JSON Schema（`slack_log_emotion_analysis`）。出力は good / bad / emotion / summary / advice の5項目（emotionは感情タイプと0〜100の感情スコアを含む）
 - `store: false`。生成Responseを後から`GET /v1/responses/{id}`で取得するための保存を無効にする設定で、現在の値のまま変更していません。OpenAI側のすべてのデータ保持をゼロにする設定ではありません（下記「OpenAI側のデータ保持」）
 
 ServerはHTTP応答のtop-level `status`が`completed`のResponseだけを構造化結果の成功候補にします。`status`が`incomplete`（例: `incomplete_details.reason` = `max_output_tokens`）や`failed`のResponseは、schema-validなoutput_textを含んでいても成功にせず、OpenAI呼び出し済みで結果を確定できない失敗として扱います（claimを解放しない。下記「AIへ送信後、結果を確定できない失敗」）。
@@ -293,7 +293,7 @@ XServer上でPR #10のproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransp
 | 100 entries | 100 | 約11.8 KB | 約2.9〜4.2秒 |
 | 200 entries（約1000字note）| 200 | 約404 KiB | 約3.2〜4.3秒 |
 
-- 全成功応答が `status = completed` かつ strict schemaの7項目を満たしました（実APIに対するPR #10のstatus判定・schema検証も兼ねています）。
+- 全成功応答が `status = completed` かつ測定時点のstrict schema（7項目）を満たしました（実APIに対するPR #10のstatus判定・schema検証も兼ねています）。現在のschemaは上記の5項目です。
 - 所要時間は入力サイズにほぼ依存せず 2.2〜4.3秒。`gpt-5.6-luna` + reasoning `none` の応答は短くばらつきも小さいです。
 - サンプルは短時間内の少数回で、高パーセンタイル・時間帯変動は未測定です。
 
