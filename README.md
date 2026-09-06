@@ -6,7 +6,7 @@ JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を
 
 解析開始の主体は手動・自動ともAndroidです。実行タイミング（timezone・recurrence・自動解析スケジュール）の判断と解析後の通知はAndroid側で行うため、サーバーはscheduler・Pushサーバーになりません。FCM・`triggerAt`・Push予約は使用しません。
 
-実装済みなのは、サーバーの土台、Hosted解析APIの契約・匿名installation認証・idempotency、Hosted AI解析です。Hosted解析サービスの基盤はIssue #5で完了し、一般公開前の残作業はIssue #6で管理しています。実OpenAI / XServerでのtimeout実測を行い、`OPENAI_TIMEOUT_SECONDS` は `45` 秒に決定しました（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）。本番環境への配置と、HTTPS経路でのServer単体smoke test（installation登録・実OpenAI解析・idempotency再送・`Authorization` 転送・平文HTTP拒否・失効データ削除Cron）まで確認済みです。
+実装済みなのは、サーバーの土台、Hosted解析APIの契約・匿名installation認証・idempotency、Hosted AI解析です。実OpenAI / XServerでのtimeout実測を行い、`OPENAI_TIMEOUT_SECONDS` は `45` 秒に決定しました（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）。本番環境への配置と、HTTPS経路でのServer単体smoke test（installation登録・実OpenAI解析・idempotency再送・`Authorization` 転送・平文HTTP拒否・失効データ削除Cron）まで確認済みです。
 
 API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめています。AndroidとServerはこの文書を共有します。
 
@@ -367,8 +367,6 @@ XServerのアカウントホーム配下・ドキュメントルート外に、�
     bin/check-deploy-connectivity.sh https://<domain>
     ```
 
-従来の手動配置（単一ディレクトリ）からの移行手順は、PR #3 のコメントに秘密値を表示しない形でまとめています。旧ディレクトリは、新 `current` で数リリース安定するまで残しておけます。
-
 ### 自動デプロイ（`v*` タグpush）
 
 `v*` 形式のタグをpushすると、`.github/workflows/deploy.yaml` が次を実行します（本番ホスト側の処理は `bin/deploy-remote.sh`）。
@@ -432,9 +430,9 @@ git push origin v1.0.0
 
 ## 未実装のもの
 
-次はいずれも未実装で、後続Issueで扱います。
+次はいずれも未実装です。
 
-- rate limit、usage集計、コスト制御、installation登録のabuse対策（Issue #4）
+- rate limit、usage集計、コスト制御、installation登録のabuse対策
 - `/health`（作るかどうか未決定）
 - account / profile、timezone、recurrence、entitlement、広告
 - 非同期job queue、Cloud Functions / Cloud Run
