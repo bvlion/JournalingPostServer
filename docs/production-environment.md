@@ -105,7 +105,7 @@ cd <deploy-root>/current && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.ph
 ```
 
 - Cronの用途はこの削除だけである。ServerはPush予約やscheduler機能を持たない。
-- 本番配置で、この削除Cronを5分間隔で設定済みである。`bin/prune-expired-analyses.php` を本番DBへ接続して手動相当で実行し、正常終了することも確認した。リリースディレクトリ方式へ移行する際は、Cronの`cd`先を`<deploy-root>/current`へ更新する。
+- 本番では、この削除Cronを5分間隔で設定済みである。`bin/prune-expired-analyses.php` を本番DBへ接続して手動相当で実行し、正常終了することも確認した。
 
 ## 秘密情報
 
