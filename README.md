@@ -2,11 +2,11 @@
 
 JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能を担う最小構成のHTTPサーバーです。XServer上で動作させることを前提としています。
 
-日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は、Androidから受け取ったJournalEntryをAI解析して同じHTTP応答で結果を返すこと（Issue #4）だけです。AI解析はOpenAI Responses APIで行います。OpenAIへ送る解析指示本文は実行環境の設定として持ちます（「環境設定」）。
+日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあり、サーバーは恒久保存しません。サーバーの責務は、Androidから受け取ったJournalEntryをAI解析して同じHTTP応答で結果を返すことだけです。AI解析はOpenAI Responses APIで行います。OpenAIへ送る解析指示本文は実行環境の設定として持ちます（「環境設定」）。
 
-解析開始の主体は手動・自動ともAndroidです。実行タイミング（timezone・recurrence・自動解析スケジュール）の判断と解析後の通知はAndroid側で行うため、サーバーはscheduler・Pushサーバーになりません。FCM・`triggerAt`・Push予約は使用しません（Issue #3で採用しないと決定）。
+解析開始の主体は手動・自動ともAndroidです。実行タイミング（timezone・recurrence・自動解析スケジュール）の判断と解析後の通知はAndroid側で行うため、サーバーはscheduler・Pushサーバーになりません。FCM・`triggerAt`・Push予約は使用しません。
 
-実装済みなのは、サーバーの土台（Issue #7）、Hosted解析APIの契約・匿名installation認証・idempotency（Issue #2）、Hosted AI解析（Issue #4）です。Hosted Server全体は親Issue #1 で管理しています。実OpenAI / XServerでのtimeout実測を行い、`OPENAI_TIMEOUT_SECONDS` は `45` 秒に決定しました（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）。Issue #13でこのServer実装をXServer本番環境へ配置し、HTTPS経路でのServer単体smoke test（installation登録・実OpenAI解析・idempotency再送・`Authorization` 転送・平文HTTP拒否・失効データ削除Cron）まで確認しました。
+実装済みなのは、サーバーの土台、Hosted解析APIの契約・匿名installation認証・idempotency、Hosted AI解析です。Hosted解析サービスの基盤はIssue #5で完了し、一般公開前の残作業はIssue #6で管理しています。実OpenAI / XServerでのtimeout実測を行い、`OPENAI_TIMEOUT_SECONDS` は `45` 秒に決定しました（[Hosted解析API契約](docs/hosted-analysis-api.md)の「本番timeoutの決定」）。本番環境への配置と、HTTPS経路でのServer単体smoke test（installation登録・実OpenAI解析・idempotency再送・`Authorization` 転送・平文HTTP拒否・失効データ削除Cron）まで確認済みです。
 
 API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめています。AndroidとServerはこの文書を共有します。
 
@@ -29,7 +29,7 @@ API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめて�
 
 方針は次のとおりです。
 
-- APIはHTTPリクエスト内で処理を完了する同期処理を第一候補とします（恒久的な制約ではありません。Issue #4で同期処理が成立しないと実測できた場合に限り、非同期化を検討します）。
+- APIはHTTPリクエスト内で処理を完了する同期処理を第一候補とします（恒久的な制約ではありません。実際のAI処理時間やXServer / HTTPの制約により同期処理が成立しないと実測できた場合に限り、非同期化を検討します）。
 - 不要な抽象化、DIコンテナ、基底Repository、ORM、過剰なClean Architectureは導入しません。
 - 本番はDocker化しません。DockerはローカルPCの開発・検証でのみ使用します。
 
@@ -175,12 +175,12 @@ SQLの適用と`schema_migrations`への記録は別のステートメントで�
 
 現在のテーブルは次のとおりです。**将来必要になりそうなテーブルは先回りして作成しません。**
 
-| テーブル | 内容 | 追加したIssue |
+| テーブル | 内容 | 導入 |
 | --- | --- | --- |
-| `schema_migrations` | 適用済みマイグレーションの記録（`database/schema_migrations.sql`） | #7 |
-| `installations` | Server内部のinstallation識別子とAPI keyのSHA-256 | #2 |
-| `analysis_requests` | 解析requestのidempotency metadata（本文は含まず、鍵付きhashだけ） | #2 |
-| `analysis_deliveries` | 再送へ同じ結果を返すための解析結果の引き渡しバッファ | #2 |
+| `schema_migrations` | 適用済みマイグレーションの記録（`database/schema_migrations.sql`） | 初期基盤 |
+| `installations` | Server内部のinstallation識別子とAPI keyのSHA-256 | Hosted解析API |
+| `analysis_requests` | 解析requestのidempotency metadata（本文は含まず、鍵付きhashだけ） | Hosted解析API |
+| `analysis_deliveries` | 再送へ同じ結果を返すための解析結果の引き渡しバッファ | Hosted解析API |
 
 JournalEntry本文はDBへ保存しません。解析結果本文もServerの原本にはせず、引き渡しバッファへ保持期間（解析完了から30分）の間だけ残します。詳細は[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照してください。
 
@@ -264,7 +264,7 @@ make check-clean
 - `Authorization`ヘッダーは`.htaccess`のRewriteでPHPへ転送し、`public/index.php`が`REDIRECT_HTTP_AUTHORIZATION`からの受け取りにも対応する
 - XServer Cronで失効データの削除（`bin/prune-expired-analyses.php`）を`<deploy-root>/current`から5分間隔で実行する。Cronの用途はこれだけである
 
-**Issue #13でこのServer実装をXServer本番環境へ配置しました。** 本番DBへ既存migrationを適用し、本番 `.env`（`DB_*` / `ANALYSIS_FINGERPRINT_SECRET` / `OPENAI_API_KEY` / `OPENAI_TIMEOUT_SECONDS=45`）を設定し、失効データ削除の5分Cronを設定しました。HTTPS経路で `POST /v1/installations` の201、Bearer認証した `POST /v1/analyses` の実OpenAI解析200、同一 `Idempotency-Key` 再送での初回と同一response、Apache経由の `Authorization` ヘッダー転送、平文HTTPの403拒否、`bin/prune-expired-analyses.php` の本番DB接続をServer単体smoke testで確認済みです。web SAPIは PHP 8.5.9 / `display_errors` OFF、`max_execution_time` は 30秒 のままです。Linux版PHPではcurl・stream・DB query等の待機時間が `max_execution_time` の計測対象に含まれないため、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較しません。通常の成功ケースが本番web request内で完了することは確認済みで、意図的なprovider timeout / fault injectionはIssue #13の完了条件に含めていません。timeout実測（`OPENAI_TIMEOUT_SECONDS = 45` の決定）は、配置前に本番と分離した検証専用ディレクトリで実施したものです。
+**このServer実装はXServer本番環境へ配置済みです。** 本番DBへ既存migrationを適用し、本番 `.env`（`DB_*` / `ANALYSIS_FINGERPRINT_SECRET` / `OPENAI_API_KEY` / `OPENAI_TIMEOUT_SECONDS=45`）を設定し、失効データ削除の5分Cronを設定しました。HTTPS経路で `POST /v1/installations` の201、Bearer認証した `POST /v1/analyses` の実OpenAI解析200、同一 `Idempotency-Key` 再送での初回と同一response、Apache経由の `Authorization` ヘッダー転送、平文HTTPの403拒否、`bin/prune-expired-analyses.php` の本番DB接続をServer単体smoke testで確認済みです。web SAPIは PHP 8.5.9 / `display_errors` OFF、`max_execution_time` は 30秒 のままです。Linux版PHPではcurl・stream・DB query等の待機時間が `max_execution_time` の計測対象に含まれないため、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較しません。通常の成功ケースが本番web request内で完了することは確認済みで、意図的なprovider timeout / fault injectionは本番確認の対象外です。timeout実測（`OPENAI_TIMEOUT_SECONDS = 45` の決定）は、配置前に本番と分離した検証専用ディレクトリで実施したものです。
 
 ## 本番デプロイ
 
@@ -367,7 +367,7 @@ XServerのアカウントホーム配下・ドキュメントルート外に、�
     bin/check-deploy-connectivity.sh https://<domain>
     ```
 
-Issue #13 の手動配置（単一ディレクトリ）からの移行手順は、PR #3 のコメントに秘密値を表示しない形でまとめています。旧ディレクトリは、新 `current` で数リリース安定するまで残しておけます。
+従来の手動配置（単一ディレクトリ）からの移行手順は、PR #3 のコメントに秘密値を表示しない形でまとめています。旧ディレクトリは、新 `current` で数リリース安定するまで残しておけます。
 
 ### 自動デプロイ（`v*` タグpush）
 
@@ -434,7 +434,7 @@ git push origin v1.0.0
 
 次はいずれも未実装で、後続Issueで扱います。
 
-- rate limit、usage集計、コスト制御、installation登録のabuse対策（#5）
+- rate limit、usage集計、コスト制御、installation登録のabuse対策（Issue #4）
 - `/health`（作るかどうか未決定）
 - account / profile、timezone、recurrence、entitlement、広告
 - 非同期job queue、Cloud Functions / Cloud Run
