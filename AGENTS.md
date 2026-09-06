@@ -6,15 +6,15 @@
 
 - JournalingPostServerは、Androidアプリ「JournalingPost」のHosted機能だけを担う最小構成のHTTP APIサーバーです。
 - 日記（JournalEntry）と解析結果（AnalysisResult）の原本は端末側にあります。サーバーはそれらを恒久保存しません。
-- サーバーの責務は、Androidから受け取ったJournalEntryのAI解析（Issue #4）だけです。
+- サーバーの責務は、Androidから受け取ったJournalEntryのAI解析だけです。
 - 解析開始の主体は手動・自動ともAndroidです。サーバーはscheduler・Pushサーバーになりません。実行タイミング（timezone / recurrence / 自動解析スケジュール）の判断と、解析後の通知はAndroid側の責務です。
-- FCMを使用しません。FCM token、`triggerAt`、ScheduledTrigger、Push予約、Server側schedulerを持ちません（Issue #3で採用しないと決定）。
+- FCMを使用しません。FCM token、`triggerAt`、ScheduledTrigger、Push予約、Server側schedulerを持ちません。
 
 ## 技術方針
 
 - WebアプリケーションフレームワークにはSlim 4を使用します。
 - データベースアクセスにはPDOを使用します。
-- APIはHTTPリクエスト内で処理を完了する同期処理を第一候補とします。ただしこれは恒久的な制約ではありません。Issue #4で実際のAI処理時間やXServer / HTTPの制約により同期処理が成立しないと実測できた場合に限り、非同期化を検討します。
+- APIはHTTPリクエスト内で処理を完了する同期処理を第一候補とします。ただしこれは恒久的な制約ではありません。実際のAI処理時間やXServer / HTTPの制約により同期処理が成立しないと実測できた場合に限り、非同期化を検討します。
 - 不要な抽象化を導入しません。
 - DIコンテナを導入しません。
 - 基底Repositoryを導入しません。
