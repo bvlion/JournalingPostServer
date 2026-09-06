@@ -371,9 +371,9 @@ XServerのアカウントホーム配下・ドキュメントルート外に、�
 
 `v*` 形式のタグをpushすると、`.github/workflows/deploy.yaml` が次を実行します（本番ホスト側の処理は `bin/deploy-remote.sh`）。
 
-1. **main 限定ガード**: タグの指すcommitが `origin/main` から到達可能（＝PR・CI・mergeを経ている）ことを確認します。未マージ・未レビューのcommitを指すタグは、SSH接続前にworkflowを失敗させます。本番ホスト側でも `bin/deploy-remote.sh` が同じ確認を行います。
+1. **main 限定ガード**: タグの指すcommitが `origin/main` から到達可能（＝PR・CI・mergeを経た）ことを確認します。未マージ・未レビューのcommitを指すタグは、SSH接続前にworkflowを失敗させます。本番ホスト側でも `bin/deploy-remote.sh` が同じ確認を行います。
 2. `<deploy-root>/repo` で `origin` と対象タグをfetchし、タグが指すcommitがworkflowの確定したcommitと一致することを確認します。
-3. **順序ガード**: `current` が指す稼働中リリースのcommitが、タグの指すcommitの祖先である（＝タグが稼働中の子孫）ことを必須にします。稼働中より古いタグも、mainには入っているが稼働中と分岐したタグ（比較不能）も拒否します。`concurrency` は同時実行を防ぐだけでFIFO順を保証しないため、遅れて実行された古い／分岐タグで本番が巻き戻らないようにします。
+3. **順序ガード**: `current` が指す稼働中リリースのcommitが、タグの指すcommitの祖先である（＝タグが稼働中の子孫として前進している）ことを必須にします。稼働中より古いタグも、mainには入っているが稼働中と分岐したタグ（比較不能）も拒否します。`concurrency` は同時実行を防ぐだけでFIFO順を保証しないため、遅れて実行された古い／分岐タグで本番が巻き戻らないようにします。
 4. `releases/<tag>/` を作り直し、`repo` からcloneしてタグのcommitへ `git checkout --detach` します。
 5. `shared/.env` をリリースへsymlinkします。
 6. GitHub Secret `ANALYSIS_INSTRUCTION` の解析指示本文を、リリース内の実行時ファイルへ平文で書き戻します（内容はログへ出しません）。1行目（空白のみも不可）または分析ルール本文が空なら失敗させます。
