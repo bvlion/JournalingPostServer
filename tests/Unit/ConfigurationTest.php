@@ -30,9 +30,9 @@ final class ConfigurationTest extends TestCase
                 'database' => [
                     'host' => 'database',
                     'port' => '3306',
-                    'name' => 'example_database',
-                    'user' => 'example_database_user',
-                    'password' => 'example_database_password',
+                    'name' => 'journalingpost_docker_local',
+                    'user' => 'journalingpost_docker_local',
+                    'password' => 'journalingpost_docker_local_password',
                 ],
                 'analysis' => [
                     'fingerprintSecret' =>
@@ -279,9 +279,9 @@ final class ConfigurationTest extends TestCase
                     'database' => [
                         'host' => 'database',
                         'port' => '3306',
-                        'name' => 'example_database',
-                        'user' => 'example_database_user',
-                        'password' => 'example_database_password',
+                        'name' => 'journalingpost_docker_local',
+                        'user' => 'journalingpost_docker_local',
+                        'password' => 'journalingpost_docker_local_password',
                     ],
                 ],
                 $configuration,

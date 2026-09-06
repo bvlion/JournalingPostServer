@@ -23,10 +23,10 @@ services:
       - --collation-server=utf8mb4_unicode_ci
       - --default-time-zone=+00:00
     environment:
-      MYSQL_DATABASE: ${DB_NAME:-example_database}
-      MYSQL_USER: ${DB_USER:-example_database_user}
-      MYSQL_PASSWORD: ${DB_PASSWORD:-example_database_password}
-      MYSQL_ROOT_PASSWORD: example_root_password
+      MYSQL_DATABASE: ${DB_NAME:-journalingpost_docker_local}
+      MYSQL_USER: ${DB_USER:-journalingpost_docker_local}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-journalingpost_docker_local_password}
+      MYSQL_ROOT_PASSWORD: journalingpost_docker_local_root_password
     healthcheck:
       test:
         - CMD-SHELL
