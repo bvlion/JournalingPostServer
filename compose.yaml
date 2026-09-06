@@ -23,8 +23,8 @@ services:
       - --collation-server=utf8mb4_unicode_ci
       - --default-time-zone=+00:00
     environment:
-      MYSQL_DATABASE: ${DB_NAME:-journalingpost_docker_local}
-      MYSQL_USER: ${DB_USER:-journalingpost_docker_local}
+      MYSQL_DATABASE: ${DB_NAME:-journalingpost_docker_local_database}
+      MYSQL_USER: ${DB_USER:-journalingpost_docker_local_user}
       MYSQL_PASSWORD: ${DB_PASSWORD:-journalingpost_docker_local_password}
       MYSQL_ROOT_PASSWORD: journalingpost_docker_local_root_password
     healthcheck:
@@ -38,6 +38,10 @@ services:
       retries: 20
     volumes:
       - database:/var/lib/mysql
+    networks:
+      default:
+        aliases:
+          - journalingpost_docker_local_host
 
 volumes:
   database:

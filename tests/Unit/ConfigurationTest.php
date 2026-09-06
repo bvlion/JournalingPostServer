@@ -28,10 +28,10 @@ final class ConfigurationTest extends TestCase
         self::assertSame(
             [
                 'database' => [
-                    'host' => 'database',
+                    'host' => 'journalingpost_docker_local_host',
                     'port' => '3306',
-                    'name' => 'journalingpost_docker_local',
-                    'user' => 'journalingpost_docker_local',
+                    'name' => 'journalingpost_docker_local_database',
+                    'user' => 'journalingpost_docker_local_user',
                     'password' => 'journalingpost_docker_local_password',
                 ],
                 'analysis' => [
@@ -277,10 +277,10 @@ final class ConfigurationTest extends TestCase
             self::assertSame(
                 [
                     'database' => [
-                        'host' => 'database',
+                        'host' => 'journalingpost_docker_local_host',
                         'port' => '3306',
-                        'name' => 'journalingpost_docker_local',
-                        'user' => 'journalingpost_docker_local',
+                        'name' => 'journalingpost_docker_local_database',
+                        'user' => 'journalingpost_docker_local_user',
                         'password' => 'journalingpost_docker_local_password',
                     ],
                 ],
