@@ -48,7 +48,7 @@ final class OpenAiAnalyzer implements Analyzer
         'type' => 'object',
         'additionalProperties' => false,
         'required' => [
-            'good', 'bad', 'score', 'emotion', 'summary', 'advice', 'tags',
+            'good', 'bad', 'emotion', 'summary', 'advice',
         ],
         'properties' => [
             'good' => [
@@ -61,19 +61,24 @@ final class OpenAiAnalyzer implements Analyzer
                 'items' => ['type' => 'string'],
                 'maxItems' => 3,
             ],
-            'score' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100],
             'emotion' => [
-                'type' => 'string',
-                'enum' => ['中立', 'ポジティブ', 'ネガティブ'],
+                'type' => 'object',
+                'additionalProperties' => false,
+                'required' => ['type', 'score'],
+                'properties' => [
+                    'type' => [
+                        'type' => 'string',
+                        'enum' => ['中立', 'ポジティブ', 'ネガティブ'],
+                    ],
+                    'score' => [
+                        'type' => 'integer',
+                        'minimum' => 0,
+                        'maximum' => 100,
+                    ],
+                ],
             ],
             'summary' => ['type' => 'string'],
             'advice' => ['type' => 'string'],
-            'tags' => [
-                'type' => 'array',
-                'items' => ['type' => 'string'],
-                'minItems' => 0,
-                'maxItems' => 5,
-            ],
         ],
     ];
 
@@ -81,11 +86,9 @@ final class OpenAiAnalyzer implements Analyzer
     private const TEXT_SECTIONS = [
         'good' => '良かったこと',
         'bad' => '嫌だったこと',
-        'score' => '感情スコア',
-        'emotion' => '感情タイプ',
+        'emotion' => '感情',
         'summary' => '要約',
         'advice' => 'AI アドバイス',
-        'tags' => 'タグ',
     ];
 
     /**
@@ -279,7 +282,7 @@ final class OpenAiAnalyzer implements Analyzer
 
     /**
      * Responses APIのoutputから最初の
-     * output_textを取得し、trimしてJSONとして解釈し、strict schemaの7項目を
+     * output_textを取得し、trimしてJSONとして解釈し、strict schemaの5項目を
      * 取り出す。どこかで取得できなければnullを返し、正常終了扱いにしない。
      *
      * Responses APIはHTTP 200でもtop-level `status`が`incomplete`（例:
@@ -290,8 +293,9 @@ final class OpenAiAnalyzer implements Analyzer
      * 呼び出し元が`AnalysisResultUnconfirmedException`側へ倒す）。
      *
      * @return array{
-     *     good: list<string>, bad: list<string>, score: int, emotion: string,
-     *     summary: string, advice: string, tags: list<string>
+     *     good: list<string>, bad: list<string>,
+     *     emotion: array{type: string, score: int}, summary: string,
+     *     advice: string
      * }|null
      */
     public static function extractStructuredResult(string $responseBody): ?array
@@ -363,8 +367,9 @@ final class OpenAiAnalyzer implements Analyzer
 
     /**
      * @return array{
-     *     good: list<string>, bad: list<string>, score: int, emotion: string,
-     *     summary: string, advice: string, tags: list<string>
+     *     good: list<string>, bad: list<string>,
+     *     emotion: array{type: string, score: int}, summary: string,
+     *     advice: string
      * }|null
      */
     private static function normaliseStructuredResult(mixed $structured): ?array
@@ -375,8 +380,6 @@ final class OpenAiAnalyzer implements Analyzer
 
         $good = self::stringList($structured['good'] ?? null);
         $bad = self::stringList($structured['bad'] ?? null);
-        $tags = self::stringList($structured['tags'] ?? null);
-        $score = $structured['score'] ?? null;
         $emotion = $structured['emotion'] ?? null;
         $summary = $structured['summary'] ?? null;
         $advice = $structured['advice'] ?? null;
@@ -384,9 +387,16 @@ final class OpenAiAnalyzer implements Analyzer
         if (
             $good === null
             || $bad === null
-            || $tags === null
-            || !is_int($score)
-            || !is_string($emotion)
+            || !is_array($emotion)
+            || !is_string($emotion['type'] ?? null)
+            || !in_array(
+                $emotion['type'],
+                ['中立', 'ポジティブ', 'ネガティブ'],
+                true,
+            )
+            || !is_int($emotion['score'] ?? null)
+            || $emotion['score'] < 0
+            || $emotion['score'] > 100
             || !is_string($summary)
             || !is_string($advice)
         ) {
@@ -396,11 +406,12 @@ final class OpenAiAnalyzer implements Analyzer
         return [
             'good' => $good,
             'bad' => $bad,
-            'score' => $score,
-            'emotion' => $emotion,
+            'emotion' => [
+                'type' => $emotion['type'],
+                'score' => $emotion['score'],
+            ],
             'summary' => $summary,
             'advice' => $advice,
-            'tags' => $tags,
         ];
     }
 
@@ -423,13 +434,14 @@ final class OpenAiAnalyzer implements Analyzer
     }
 
     /**
-     * 構造化7項目を、AndroidのAnalysisResult.bodyへ保存できる単一のプレーン
+     * 構造化5項目を、AndroidのAnalysisResult.bodyへ保存できる単一のプレーン
      * テキストへ固定順で整形する。
      * good/badは箇条書き、空配列は「なし」。JSON文字列をそのままbodyにしない。
      *
      * @param array{
-     *     good: list<string>, bad: list<string>, score: int, emotion: string,
-     *     summary: string, advice: string, tags: list<string>
+     *     good: list<string>, bad: list<string>,
+     *     emotion: array{type: string, score: int}, summary: string,
+     *     advice: string
      * } $structured
      */
     public static function formatAnalysisText(array $structured): string
@@ -456,13 +468,9 @@ final class OpenAiAnalyzer implements Analyzer
                 );
         }
 
-        if ($key === 'tags') {
-            /** @var list<string> $value */
-            return $value === [] ? 'なし' : implode(', ', $value);
-        }
-
-        if ($key === 'score') {
-            return $value . ' / 100';
+        if ($key === 'emotion') {
+            /** @var array{type: string, score: int} $value */
+            return sprintf('%s（%d / 100）', $value['type'], $value['score']);
         }
 
         return (string) $value;

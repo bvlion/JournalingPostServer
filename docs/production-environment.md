@@ -70,7 +70,7 @@ Issue #13で、この構成のServer実装をXServer本番環境へ配置しま�
 XServer上の検証ディレクトリ（本番配置とは分離）で、PR #10のproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransport`）をそのまま使い、実OpenAI Responses APIへ接続して測定した。生の数値と条件はIssue #4のコメントに記録している。
 
 - 成功応答の所要時間は 1〜200 entry（payload 約3.6 KB〜約404 KiB）で 2.2〜4.3 秒。入力サイズにほぼ依存しない（`gpt-5.6-luna` + reasoning `none`）。
-- 全成功応答が `status = completed` かつ strict schemaの7項目を満たした。
+- 全成功応答が `status = completed` かつ測定時点のstrict schema（7項目）を満たした。現在のschemaは5項目である。
 - サンプルは短時間内の少数回。高パーセンタイル・時間帯変動は未測定。
 - 意図的なOpenAI側timeoutは発生させていない。
 

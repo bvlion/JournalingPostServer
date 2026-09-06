@@ -10,8 +10,6 @@
 
 - good: 文字列の配列。
 - bad: 文字列の配列。
-- score: 整数。
-- emotion: SCHEMA の enum のいずれか1つ。
+- emotion: type（中立 / ポジティブ / ネガティブ）と0〜100のscore。
 - summary: 文字列。
 - advice: 文字列。
-- tags: 文字列の配列。

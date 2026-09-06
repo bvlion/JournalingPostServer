@@ -601,7 +601,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * 実OpenAI Analyzerを通した成功。7項目を整形したプレーンテキストと、
+     * 実OpenAI Analyzerを通した成功。5項目を整形したプレーンテキストと、
      * 実際に使用したmodelを返し、再送は同じ結果をAIを呼ばずに返す。
      */
     public function testOpenAiAnalyzerSuccessIsStoredAndReplayed(): void
@@ -617,7 +617,8 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         self::assertSame(200, $first->getStatusCode());
         self::assertSame('gpt-5.6-luna', $analysis['model']);
         self::assertStringContainsString('【良かったこと】', $analysis['text']);
-        self::assertStringContainsString('【タグ】', $analysis['text']);
+        self::assertStringContainsString('【感情】', $analysis['text']);
+        self::assertStringNotContainsString('【タグ】', $analysis['text']);
         self::assertStringNotContainsString(self::NOTE, (string) $first->getBody());
 
         $second = $this->analyse($apiKey, analyzer: $analyzer);
@@ -1283,18 +1284,16 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * OpenAI Responses APIの正常応答（架空の構造化7項目）。
+     * OpenAI Responses APIの正常応答（架空の構造化5項目）。
      */
     private static function openAiResponsesBody(): string
     {
         $structured = json_encode([
             'good' => ['架空の良かったこと'],
             'bad' => [],
-            'score' => 62,
-            'emotion' => '中立',
+            'emotion' => ['type' => '中立', 'score' => 62],
             'summary' => '架空の要約。',
             'advice' => '架空の助言。',
-            'tags' => ['架空タグ'],
         ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
 
         return json_encode([
