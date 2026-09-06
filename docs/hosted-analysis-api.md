@@ -2,7 +2,7 @@
 
 AndroidアプリJournalingPost（`bvlion/JournalingPost`）とJournalingPostServerが共有するHTTP契約です。
 
-対応するAndroid側のIssueは`bvlion/JournalingPost#40`（Hosted解析の接続）と`bvlion/JournalingPost#37`（AnalysisResultの端末保存）です。JournalEntryの最小内容契約（Moodは絵文字だけ・名称だけ・両方のいずれでも可、noteだけでも可、Moodもnoteも無いentryは不可）はAndroid `bvlion/JournalingPost#42` / `bvlion/JournalingPost#50` に合わせました。
+JournalEntryの最小内容契約は、Moodは絵文字だけ・名称だけ・両方のいずれでも可、noteだけでも可、Moodもnoteも無いentryは不可です。
 
 ## 位置づけ
 
@@ -29,7 +29,7 @@ Android                         Server
 
 自動解析でも同じ流れです。ServerがtriggerAtを持ってFCMでAndroidを起こす構成は採用しません。Serverが持たないのは、FCM token・`triggerAt`・ScheduledTrigger・Push予約・scheduler・timezone・recurrenceです。
 
-AI provider呼び出しは実装済みです。rate limit / usage / 登録endpointのabuse対策はIssue #4で扱います。
+AI provider呼び出しは実装済みです。rate limit / usage / 登録endpointのabuse対策は未実装です。
 
 ## 共通事項
 
@@ -86,10 +86,10 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 
 | 方式 | 採らなかった理由 |
 | --- | --- |
-| Android Keystoreの署名 | 鍵が端末外へ出ない強さはあるが、PHP側の署名検証・nonce・時刻ずれ対応が増える。installation単位のrate limit（Issue #4）で足りる想定 |
+| Android Keystoreの署名 | 鍵が端末外へ出ない強さはあるが、PHP側の署名検証・nonce・時刻ずれ対応が増える。installation単位のrate limitで足りる想定 |
 | Play Integrity / App Check | 端末とアプリの正当性まで確認できるが、PHP側にGoogle依存と鍵管理が増える。現在の最小構成には重い |
 
-登録endpoint自体のrate limitとabuse対策はIssue #4で扱います。現時点では登録を無制限に受け付けます。
+登録endpoint自体のrate limitとabuse対策は未実装です。現時点では登録を無制限に受け付けます。
 
 ## POST /v1/installations
 
@@ -227,7 +227,6 @@ ZDRを有効化する場合はデプロイ運用（`docs/production-environment.
 - OpenAIがHTTPエラーを返した場合、そのresponse bodyを例外文・ログ・error responseへ出さず、固定のerror契約（`503 analysis_unavailable`）へ変換します。4xxはclaimを解放して再実行可能にし、5xxはHTTPエラー応答だけからは生成・課金の有無を確定できないためclaimを解放しません（応答は同じ`503`）。詳細は「AIへ送信後、結果を確定できない失敗」。
 - 設定は`.env`の`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`です。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合は、HTTPアプリの起動を秘密値を含めずに失敗させます。DBだけを使うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）はこれらを検証しないため、`OPENAI_API_KEY`を空にしても失効データ削除Cronは動き続けます。
 
-
 ## Idempotency / retry / timeout
 
 ### 契約
@@ -340,12 +339,12 @@ web `max_execution_time` は本番サーバーパネルで **30秒** を確認�
 | 413 | `payload_too_large` | request bodyが上限超過 | 対象期間を分けて送る |
 | 415 | `unsupported_media_type` | `Content-Type`が`application/json`でない | retryしない |
 | 422 | `validation_error` | request契約違反 | retryしない |
-| 429 | `rate_limited` | 利用上限（**Issue #4で実装**） | `Retry-After`後に同じkeyで再送 |
+| 429 | `rate_limited` | 利用上限（未実装） | `Retry-After`後に同じkeyで再送 |
 | 500 | `internal_error` | Server側の想定外エラー | 間隔を空けて同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある。上記参照） |
 | 503 | `analysis_unavailable` | AI providerが利用できない（provider未到達・4xx・5xx） | `Retry-After`後に同じkeyで再送（5xx由来の場合は保持期間内は`409 analysis_in_progress`になり得る） |
 | 504 | `analysis_timeout` | AI解析が`OPENAI_TIMEOUT_SECONDS`内に終わらない | 同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある） |
 
-`429`は契約として予約しています（Issue #4で実装）。`504`は実装済みです。
+`429`は契約として予約していますが未実装です。`504`は実装済みです。
 
 エラーの種類にかかわらず、AndroidはJournalEntryをローカルに保持し続けます。解析に失敗しても記録は失われません。
 
@@ -362,7 +361,7 @@ web `max_execution_time` は本番サーバーパネルで **30秒** を確認�
 - `analysis_requests`に入るのは正規化requestの鍵付きhash（HMAC-SHA-256）だけで、本文は復元できません。鍵はDBの外（環境変数）にあるため、DBだけを読める状態では本文の候補を列挙して突き合わせることもできません。鍵はinstallation単位にscopeしているため、installationを跨いで同じ内容のrequestを突き合わせることもできません。
 - 本文・prompt・API keyを通常ログ、例外メッセージ、error responseへ出しません。
 - 名前、メールアドレス、profile、timezone、解析スケジュールのルール、entitlement、広告状態は保持しません。
-- `installations`の削除は`analysis_requests`と`analysis_deliveries`へ`ON DELETE CASCADE`で波及します。使われなくなったinstallationの削除方針は、実運用の状況を見てIssue #4で決めます。
+- `installations`の削除は`analysis_requests`と`analysis_deliveries`へ`ON DELETE CASCADE`で波及します。使われなくなったinstallationの削除方針は、実運用の状況を見て決めます。
 
 `analysis_requests`の完了記録と`analysis_deliveries`への書き込みは、そのclaimを取得した処理だけが行えます（取得時刻の一致と未完了であることが条件）。失効・削除された後に同じkeyで作られた新しいclaimを、古い処理が完了扱いにしたり上書きしたりしません。
 
@@ -390,7 +389,7 @@ AI呼び出しは`JournalingPostServer\Analysis\Analyzer`の1点に閉じてい�
 ## 未実装・対象外
 
 - provider呼び出し自体の打ち切り（Serverはtimeout時にconnection側で打ち切り、`504`を返す。呼び出しのキャンセル通知はOpenAIへ送らない）
-- rate limit、usage集計、登録endpointのabuse対策（Issue #4）
+- rate limit、usage集計、登録endpointのabuse対策
 - account / profile、timezone、recurrence、entitlement、広告状態
 - JournalEntry / AnalysisResultのクラウド保存
 
