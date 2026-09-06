@@ -1,8 +1,8 @@
 # Hosted解析API契約
 
-AndroidアプリJournalingPost（`bvlion/JournalingPost`）とJournalingPostServerが共有するHTTP契約です。Issue #2で定義しました。
+AndroidアプリJournalingPost（`bvlion/JournalingPost`）とJournalingPostServerが共有するHTTP契約です。
 
-対応するAndroid側のIssueは`bvlion/JournalingPost#40`（Hosted解析の接続）と`#37`（AnalysisResultの端末保存）です。JournalEntryの最小内容契約（Moodは絵文字だけ・名称だけ・両方のいずれでも可、noteだけでも可、Moodもnoteも無いentryは不可）はIssue #11でAndroid `#42` / `#50` に合わせました。
+JournalEntryの最小内容契約は、Moodは絵文字だけ・名称だけ・両方のいずれでも可、noteだけでも可、Moodもnoteも無いentryは不可です。
 
 ## 位置づけ
 
@@ -27,9 +27,9 @@ Android                         Server
   必要ならAndroid側でローカル通知
 ```
 
-自動解析でも同じ流れです。ServerがtriggerAtを持ってFCMでAndroidを起こす構成は採用しません（Issue #3を`not planned`でclose）。Serverが持たないのは、FCM token・`triggerAt`・ScheduledTrigger・Push予約・scheduler・timezone・recurrenceです。
+自動解析でも同じ流れです。ServerがtriggerAtを持ってFCMでAndroidを起こす構成は採用しません。Serverが持たないのは、FCM token・`triggerAt`・ScheduledTrigger・Push予約・scheduler・timezone・recurrenceです。
 
-AI provider呼び出しはIssue #4で実装しました。rate limit / usage / 登録endpointのabuse対策はIssue #5で扱います。
+AI provider呼び出しは実装済みです。rate limit / usage / 登録endpointのabuse対策は未実装です。
 
 ## 共通事項
 
@@ -86,10 +86,10 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 
 | 方式 | 採らなかった理由 |
 | --- | --- |
-| Android Keystoreの署名 | 鍵が端末外へ出ない強さはあるが、PHP側の署名検証・nonce・時刻ずれ対応が増える。installation単位のrate limit（#5）で足りる想定 |
-| Play Integrity / App Check | 端末とアプリの正当性まで確認できるが、PHP側にGoogle依存と鍵管理が増える。#2の最小構成には重い |
+| Android Keystoreの署名 | 鍵が端末外へ出ない強さはあるが、PHP側の署名検証・nonce・時刻ずれ対応が増える。installation単位のrate limitで足りる想定 |
+| Play Integrity / App Check | 端末とアプリの正当性まで確認できるが、PHP側にGoogle依存と鍵管理が増える。現在の最小構成には重い |
 
-登録endpoint自体のrate limitとabuse対策はIssue #5で扱います。#2の時点では登録を無制限に受け付けます。
+登録endpoint自体のrate limitとabuse対策は未実装です。現時点では登録を無制限に受け付けます。
 
 ## POST /v1/installations
 
@@ -227,7 +227,6 @@ ZDRを有効化する場合はデプロイ運用（`docs/production-environment.
 - OpenAIがHTTPエラーを返した場合、そのresponse bodyを例外文・ログ・error responseへ出さず、固定のerror契約（`503 analysis_unavailable`）へ変換します。4xxはclaimを解放して再実行可能にし、5xxはHTTPエラー応答だけからは生成・課金の有無を確定できないためclaimを解放しません（応答は同じ`503`）。詳細は「AIへ送信後、結果を確定できない失敗」。
 - 設定は`.env`の`OPENAI_API_KEY`と`OPENAI_TIMEOUT_SECONDS`です。未指定・空・`OPENAI_TIMEOUT_SECONDS`が正の整数でない場合は、HTTPアプリの起動を秘密値を含めずに失敗させます。DBだけを使うCLI（`bin/migrate.php`・`bin/prune-expired-analyses.php`）はこれらを検証しないため、`OPENAI_API_KEY`を空にしても失効データ削除Cronは動き続けます。
 
-
 ## Idempotency / retry / timeout
 
 ### 契約
@@ -284,7 +283,7 @@ Androidの扱いは`504` / `500`の契約どおり、また5xx由来の`503`（`
 
 #### 本番timeoutの決定
 
-XServer上でPR #10のproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransport`）をそのまま使い、実OpenAI Responses APIへ接続して測定しました（`/opt/php-8.5.5/bin/php`、curl 7.61.1 / OpenSSL 1.1.1k、測定用curl timeout 180秒、架空のJournalEntry）。詳細と生の数値はIssue #4のコメントに記録しています。
+XServer上でproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransport`）をそのまま使い、実OpenAI Responses APIへ接続して測定しました（`/opt/php-8.5.5/bin/php`、curl 7.61.1 / OpenSSL 1.1.1k、測定用curl timeout 180秒、架空のJournalEntry）。測定条件と結果は以下のとおりです。
 
 | case | entry数 | request payload | 成功応答の所要時間 |
 | --- | --- | --- | --- |
@@ -293,7 +292,7 @@ XServer上でPR #10のproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransp
 | 100 entries | 100 | 約11.8 KB | 約2.9〜4.2秒 |
 | 200 entries（約1000字note）| 200 | 約404 KiB | 約3.2〜4.3秒 |
 
-- 全成功応答が `status = completed` かつ測定時点のstrict schema（7項目）を満たしました（実APIに対するPR #10のstatus判定・schema検証も兼ねています）。現在のschemaは上記の5項目です。
+- 全成功応答が `status = completed` かつ測定時点のstrict schema（7項目）を満たしました（実APIに対するstatus判定・schema検証も兼ねています）。現在のschemaは上記の5項目です。
 - 所要時間は入力サイズにほぼ依存せず 2.2〜4.3秒。`gpt-5.6-luna` + reasoning `none` の応答は短くばらつきも小さいです。
 - サンプルは短時間内の少数回で、高パーセンタイル・時間帯変動は未測定です。
 
@@ -305,9 +304,9 @@ XServer上でPR #10のproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransp
   - 本番監視で45秒に近づく応答が出たら見直します。
 - Android read timeout = 90秒（上記）。
 
-web `max_execution_time` は本番サーバーパネルで **30秒** を確認しました（PHP 8.5.9 / `display_errors` OFF）。Issue #13 では 30秒 のまま維持しています。Linux版PHPでは system call・stream operation・DB query 等の待機時間が `max_execution_time` の計測対象に含まれないため、OpenAI 呼び出し（curl / socket 待ち）の待機時間は 30秒 の対象外であり、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較しません。CLI PHP は `max_execution_time = 0`（無制限）ですが API は web SAPI で動きます。
+web `max_execution_time` は本番サーバーパネルで **30秒** を確認しました（PHP 8.5.9 / `display_errors` OFF）。30秒のまま維持しています。Linux版PHPでは system call・stream operation・DB query 等の待機時間が `max_execution_time` の計測対象に含まれないため、OpenAI 呼び出し（curl / socket 待ち）の待機時間は 30秒 の対象外であり、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較しません。CLI PHP は `max_execution_time = 0`（無制限）ですが API は web SAPI で動きます。
 
-Issue #13 の本番配置後 smoke test で、実サイズの `POST /v1/analyses` が本番 web request 内で完了し、通常の成功ケースが XServer の Web / FastCGI / front proxy の wall-clock timeout で先に切られないことを確認しました。遅いケースで Server 側の `504 analysis_timeout`（claim 非解放）が外側の timeout より先に発火することの実証（意図的な provider timeout / fault injection）は、Issue #13 の完了条件に含めていません。OpenAI 側のリクエスト timeout は意図的に発生させていません（`max_output_tokens: 800` / `reasoning: none` で生成は短く、超過時は `status: incomplete` として扱われます）。
+本番配置後のsmoke testで、実サイズの `POST /v1/analyses` が本番 web request 内で完了し、通常の成功ケースが XServer の Web / FastCGI / front proxy の wall-clock timeout で先に切られないことを確認しました。遅いケースで Server 側の `504 analysis_timeout`（claim 非解放）が外側の timeout より先に発火することの実証（意図的な provider timeout / fault injection）は、この確認の対象外です。OpenAI 側のリクエスト timeout は意図的に発生させていません（`max_output_tokens: 800` / `reasoning: none` で生成は短く、超過時は `status: incomplete` として扱われます）。
 
 ## Error response
 
@@ -340,12 +339,12 @@ Issue #13 の本番配置後 smoke test で、実サイズの `POST /v1/analyses
 | 413 | `payload_too_large` | request bodyが上限超過 | 対象期間を分けて送る |
 | 415 | `unsupported_media_type` | `Content-Type`が`application/json`でない | retryしない |
 | 422 | `validation_error` | request契約違反 | retryしない |
-| 429 | `rate_limited` | 利用上限（**Issue #5で実装**） | `Retry-After`後に同じkeyで再送 |
+| 429 | `rate_limited` | 利用上限（未実装） | `Retry-After`後に同じkeyで再送 |
 | 500 | `internal_error` | Server側の想定外エラー | 間隔を空けて同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある。上記参照） |
 | 503 | `analysis_unavailable` | AI providerが利用できない（provider未到達・4xx・5xx） | `Retry-After`後に同じkeyで再送（5xx由来の場合は保持期間内は`409 analysis_in_progress`になり得る） |
 | 504 | `analysis_timeout` | AI解析が`OPENAI_TIMEOUT_SECONDS`内に終わらない | 同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある） |
 
-`429`は契約として予約しています（Issue #5で実装）。`504`はIssue #4で実装しました。
+`429`は契約として予約していますが未実装です。`504`は実装済みです。
 
 エラーの種類にかかわらず、AndroidはJournalEntryをローカルに保持し続けます。解析に失敗しても記録は失われません。
 
@@ -362,7 +361,7 @@ Issue #13 の本番配置後 smoke test で、実サイズの `POST /v1/analyses
 - `analysis_requests`に入るのは正規化requestの鍵付きhash（HMAC-SHA-256）だけで、本文は復元できません。鍵はDBの外（環境変数）にあるため、DBだけを読める状態では本文の候補を列挙して突き合わせることもできません。鍵はinstallation単位にscopeしているため、installationを跨いで同じ内容のrequestを突き合わせることもできません。
 - 本文・prompt・API keyを通常ログ、例外メッセージ、error responseへ出しません。
 - 名前、メールアドレス、profile、timezone、解析スケジュールのルール、entitlement、広告状態は保持しません。
-- `installations`の削除は`analysis_requests`と`analysis_deliveries`へ`ON DELETE CASCADE`で波及します。使われなくなったinstallationの削除方針は、実運用の状況を見てIssue #5で決めます。
+- `installations`の削除は`analysis_requests`と`analysis_deliveries`へ`ON DELETE CASCADE`で波及します。使われなくなったinstallationの削除方針は、実運用の状況を見て決めます。
 
 `analysis_requests`の完了記録と`analysis_deliveries`への書き込みは、そのclaimを取得した処理だけが行えます（取得時刻の一致と未完了であることが条件）。失効・削除された後に同じkeyで作られた新しいclaimを、古い処理が完了扱いにしたり上書きしたりしません。
 
@@ -383,15 +382,15 @@ Issue #13 の本番配置後 smoke test で、実サイズの `POST /v1/analyses
 
 AI呼び出しは`JournalingPostServer\Analysis\Analyzer`の1点に閉じています。認証・request検証・idempotency・error契約はこのinterfaceの実装に依存しません。
 
-- Issue #4で`OpenAi\OpenAiAnalyzer`（curl transport）を既定実装として追加しました。system promptと分析ルール本文は実行環境の設定から読み込みます。この文書のrequest / response契約は変わりません。
+- `OpenAi\OpenAiAnalyzer`（curl transport）を既定実装として追加しました。system promptと分析ルール本文は実行環境の設定から読み込みます。この文書のrequest / response契約は変わりません。
 - テストは`Analyzer`をこのseamで差し替え、実OpenAIへ接続しません。
 - XServer / PHP / OpenAI APIの実測により同期処理が成立しないと分かった場合にだけ、非同期化を検討します。その場合も`POST /v1/analyses`は受付として残し、結果取得を追加する形を優先します。先回りして非同期基盤を作りません。
 
-## このIssueで実装していないこと
+## 未実装・対象外
 
 - provider呼び出し自体の打ち切り（Serverはtimeout時にconnection側で打ち切り、`504`を返す。呼び出しのキャンセル通知はOpenAIへ送らない）
-- rate limit、usage集計、登録endpointのabuse対策（Issue #5）
+- rate limit、usage集計、登録endpointのabuse対策
 - account / profile、timezone、recurrence、entitlement、広告状態
 - JournalEntry / AnalysisResultのクラウド保存
 
-FCM token・`triggerAt`・ScheduledTrigger・Push予約・Server側schedulerは、このIssueで実装していないものではなく、最終仕様として持たないものです（Issue #3を`not planned`でclose）。
+FCM token・`triggerAt`・ScheduledTrigger・Push予約・Server側schedulerは、未実装という位置づけではなく、最終仕様として持たないものです。
