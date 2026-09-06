@@ -344,18 +344,18 @@ XServerのアカウントホーム配下・ドキュメントルート外に、�
 
 4. デプロイ専用のSSH鍵ペアを作成し、公開鍵をXServer側の対象アカウントの `~/.ssh/authorized_keys` へ登録します。
 
-5. 「必要なGitHub Secrets」をすべて登録します（秘密値を表示しない手順はPRコメントに掲載）。
+5. 「必要なGitHub Secrets」をすべて登録します（一覧は「必要なGitHub Secrets」参照）。
 
 6. `v*` タグを作成・pushして最初のリリースを作ります（「通常のリリース手順」）。`<deploy-root>/current` と `releases/<tag>/` が作られます。
 
-7. 公開先を新方式へ向けます。既存の `public_html` を新しい `current` 経由へ切り替えます。
+7. 公開先を `current` 経由へ向けます。`public_html` に次を配置します。
 
     ```shell
     ln -sfn <deploy-root>/current/public/index.php <public_html>/index.php
     cp <deploy-root>/current/public/.htaccess <public_html>/.htaccess
     ```
 
-8. 失効データ削除Cronの作業ディレクトリを `current` 経由へ更新します（「失効データの削除」節）。
+8. 失効データ削除Cronを `current` 経由で設定します（「失効データの削除」節）。
 
     ```shell
     cd <deploy-root>/current && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.php
@@ -373,7 +373,7 @@ XServerのアカウントホーム配下・ドキュメントルート外に、�
 
 1. **main 限定ガード**: タグの指すcommitが `origin/main` から到達可能（＝PR・CI・mergeを経ている）ことを確認します。未マージ・未レビューのcommitを指すタグは、SSH接続前にworkflowを失敗させます。本番ホスト側でも `bin/deploy-remote.sh` が同じ確認を行います。
 2. `<deploy-root>/repo` で `origin` と対象タグをfetchし、タグが指すcommitがworkflowの確定したcommitと一致することを確認します。
-3. **順序ガード**: `current` が指す稼働中リリースのcommitが、タグの指すcommitの祖先である（＝タグが稼働中の子孫として前進している）ことを必須にします。稼働中より古いタグも、mainには入っているが稼働中と分岐したタグ（比較不能）も拒否します。`concurrency` は同時実行を防ぐだけでFIFO順を保証しないため、遅れて実行された古い／分岐タグで本番が巻き戻らないようにします。
+3. **順序ガード**: `current` が指す稼働中リリースのcommitが、タグの指すcommitの祖先である（＝タグが稼働中の子孫）ことを必須にします。稼働中より古いタグも、mainには入っているが稼働中と分岐したタグ（比較不能）も拒否します。`concurrency` は同時実行を防ぐだけでFIFO順を保証しないため、遅れて実行された古い／分岐タグで本番が巻き戻らないようにします。
 4. `releases/<tag>/` を作り直し、`repo` からcloneしてタグのcommitへ `git checkout --detach` します。
 5. `shared/.env` をリリースへsymlinkします。
 6. GitHub Secret `ANALYSIS_INSTRUCTION` の解析指示本文を、リリース内の実行時ファイルへ平文で書き戻します（内容はログへ出しません）。1行目（空白のみも不可）または分析ルール本文が空なら失敗させます。
