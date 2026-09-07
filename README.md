@@ -44,7 +44,7 @@ API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめて�
 
 `POST /v1/analyses`は`Authorization: Bearer <API key>`と`Idempotency-Key`を必要とします。request / responseのschema、error契約、retry / idempotency、保持期間は[Hosted解析API契約](docs/hosted-analysis-api.md)を参照してください。
 
-`POST /v1/analyses`は認証・検証・idempotencyを通したうえでOpenAI Responses APIを呼び、良かったこと / 嫌だったこと / 感情（タイプと0〜100のスコア） / 要約 / AI アドバイスの5項目を整形したプレーンテキストを返します。provider利用不能は`503 analysis_unavailable`、送信後に結果を確定できない失敗（timeout等）は`504 analysis_timeout` / `500 internal_error`で、後者はclaimを解放せず二重課金を避けます。
+`POST /v1/analyses`は認証・検証・idempotencyを通したうえでOpenAI Responses APIを呼び、良かったこと / 嫌だったこと / 感情（タイプと0〜100のスコア） / 要約 / AI アドバイスの5項目を整形したプレーンテキストを返します。provider利用不能は`503 analysis_unavailable`、送信後に結果を確定できない失敗（timeout等）は`504 analysis_timeout` / `500 internal_error`で、結果不明もclaimを解放して再試行可能にします。成功済みの同じ対象日は429で拒否します。
 
 ## プライバシーポリシー
 
@@ -134,10 +134,10 @@ docker compose run --rm --no-deps app composer install
 docker compose up app
 ```
 
-疎通確認には匿名installationの登録を使えます。
+疎通確認は認証なしの解析requestに対する401で確認できます。登録にはPlay Integrity tokenが必要です。
 
 ```shell
-curl -i -X POST http://127.0.0.1:8081/v1/installations
+curl -i -X POST http://127.0.0.1:8081/v1/analyses
 ```
 
 未定義のパスへアクセスすると、同じ形のJSONエラー（`{"error": {"code": "not_found", ...}}`）が返ります。
@@ -181,6 +181,8 @@ SQLの適用と`schema_migrations`への記録は別のステートメントで�
 | `installations` | Server内部のinstallation識別子とAPI keyのSHA-256 | Hosted解析API |
 | `analysis_requests` | 解析requestのidempotency metadata（本文は含まず、鍵付きhashだけ） | Hosted解析API |
 | `analysis_deliveries` | 再送へ同じ結果を返すための解析結果の引き渡しバッファ | Hosted解析API |
+| `analysis_days` | installationごとの成功済み対象日 | Hosted利用制御 |
+| `provider_calls` | provider呼出日時と取得できたmodel・token量 | Hosted利用制御 |
 
 JournalEntry本文はDBへ保存しません。解析結果本文もServerの原本にはせず、引き渡しバッファへ保持期間（解析完了から30分）の間だけ残します。詳細は[Hosted解析API契約](docs/hosted-analysis-api.md)の「Serverが保持するデータと保持期間」を参照してください。
 
@@ -428,11 +430,12 @@ git push origin v1.0.0
 - **マイグレーション**: `bin/migrate.php` にロールバックはありません。additive-only運用のため旧リリースは動作を続けられます。データ面の是正が必要な場合は、バックアップからの復元または追加のマイグレーションで行い、適用済みファイルは変更しません。
 - **公開停止**: `public_html/index.php` のシンボリックリンクを外すか、`.htaccess` を退避すれば公開を止められます。
 
+Hostedの成功日制御、登録のPlay Integrity確認、利用記録・月次出力・個別解除は[運用手順](docs/hosted-usage-operations.md)を参照してください。この変更の本番配置とGoogleとの実疎通は未実施です。
+
 ## 未実装のもの
 
 次はいずれも未実装です。
 
-- rate limit、usage集計、コスト制御、installation登録のabuse対策
 - `/health`（作るかどうか未決定）
 - account / profile、timezone、recurrence、entitlement、広告
 - 非同期job queue、Cloud Functions / Cloud Run

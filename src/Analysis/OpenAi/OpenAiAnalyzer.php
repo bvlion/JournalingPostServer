@@ -34,6 +34,9 @@ use JsonException;
  */
 final class OpenAiAnalyzer implements Analyzer
 {
+    /** @var array<string, mixed>|null 本文・認証情報は入れない。 */
+    public ?array $lastCall = null;
+
     public const ENDPOINT = 'https://api.openai.com/v1/responses';
 
     // 既定値。変更しない。
@@ -112,6 +115,7 @@ final class OpenAiAnalyzer implements Analyzer
 
     public function analyze(AnalysisRequest $request): Analysis
     {
+        $this->lastCall = null;
         try {
             $body = json_encode(
                 $this->buildRequestPayload($request),
@@ -123,6 +127,7 @@ final class OpenAiAnalyzer implements Analyzer
             throw self::providerUnavailable();
         }
 
+        $calledAt = (new DateTimeImmutable('now'))->format('Y-m-d H:i:s.u');
         try {
             $result = $this->transport->post(
                 self::ENDPOINT,
@@ -136,7 +141,9 @@ final class OpenAiAnalyzer implements Analyzer
             // requestはOpenAIへ到達していない。確定失敗として扱う。
             throw self::providerUnavailable();
         } catch (OpenAiUnconfirmedException $exception) {
-            // 送信後に結果を確認できない。claimを解放しない側へ倒す。
+            $this->lastCall = ['calledAt' => $calledAt, 'model' => null,
+                'inputTokens' => null, 'cachedInputTokens' => null, 'outputTokens' => null];
+            // 送信後に結果を確認できない。呼び出し元で再試行可能にする。
             throw new AnalysisResultUnconfirmedException(
                 $exception->timedOut()
                     ? self::analysisTimedOut()
@@ -145,12 +152,26 @@ final class OpenAiAnalyzer implements Analyzer
             );
         }
 
+        $payload = json_decode($result->body, true);
+        $usage = is_array($payload) ? ($payload['usage'] ?? null) : null;
+        $model = is_array($payload) ? ($payload['model'] ?? null) : null;
+        $this->lastCall = ['calledAt' => $calledAt,
+            'model' => is_string($model) && preg_match('/\A[A-Za-z0-9._:\/-]{1,128}\z/', $model) === 1 ? $model : null,
+            'inputTokens' => null, 'cachedInputTokens' => null, 'outputTokens' => null];
+        if (
+            is_array($usage) && is_int($usage['input_tokens'] ?? null) && $usage['input_tokens'] >= 0
+            && is_int($usage['output_tokens'] ?? null) && $usage['output_tokens'] >= 0
+        ) {
+            $this->lastCall['inputTokens'] = $usage['input_tokens'];
+            $this->lastCall['outputTokens'] = $usage['output_tokens'];
+            $cached = $usage['input_tokens_details']['cached_tokens'] ?? null;
+            if (is_int($cached) && $cached >= 0 && $cached <= $usage['input_tokens']) {
+                $this->lastCall['cachedInputTokens'] = $cached;
+            }
+        }
+
         if ($result->status >= 500) {
-            // provider 5xx。OpenAIがrequestを受理・処理した後の一時的な5xxか、
-            // 処理前の拒否かを、HTTPエラー応答を受け取ったことだけからは確定
-            // できない。生成・課金が行われた可能性がある側へ倒し、claimを解放
-            // しない（同じkeyの即時retryでAIを再実行しない）。ユーザー向け応答は
-            // 4xxと同じ503 analysis_unavailableのまま。raw bodyは出さない。
+            // provider 5xxは結果不明だが、呼び出し元は再試行を許可する。
             throw new AnalysisResultUnconfirmedException(
                 self::providerUnavailable(),
                 'OpenAI returned a 5xx response; the request outcome is not '
@@ -169,7 +190,7 @@ final class OpenAiAnalyzer implements Analyzer
 
         if ($structured === null) {
             // 2xxでも必要なoutput_text / strict schemaの結果が無い。AIは呼ばれて
-            // おり課金され得るため、正常終了扱いにせず、即時再実行もしない。
+            // おり課金され得るが、成功扱いにせず再試行を許可する。
             throw new AnalysisResultUnconfirmedException(
                 self::resultUnconfirmed(),
                 'OpenAI returned a 2xx response without a usable structured '

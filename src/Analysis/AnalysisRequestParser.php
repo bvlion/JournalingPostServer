@@ -53,13 +53,43 @@ final class AnalysisRequestParser
         . '(?:Z|(?<offsetSign>[+-])(?<offsetHour>\d{2}):(?<offsetMinute>\d{2}))'
         . '\z/';
 
-    public static function parse(stdClass $payload): AnalysisRequest
+    public static function parse(stdClass $payload, ?DateTimeImmutable $now = null): AnalysisRequest
     {
         /** @var list<string> $violations */
         $violations = [];
 
         [$periodStart, $periodEnd] = self::parsePeriod($payload, $violations);
         $entries = self::parseEntries($payload, $violations);
+
+        $analysisDate = $payload->analysisDate ?? null;
+        $date = is_string($analysisDate) && preg_match('/\A[0-9]{8}\z/', $analysisDate) === 1
+            ? DateTimeImmutable::createFromFormat('!Ymd', $analysisDate, new DateTimeZone('UTC'))
+            : false;
+        if ($date === false || $date->format('Ymd') !== $analysisDate) {
+            $violations[] = 'analysisDate: must be a calendar date in yyyyMMdd format.';
+        } else {
+            $today = ($now ?? new DateTimeImmutable('now'))
+                ->setTimezone(new DateTimeZone('Asia/Tokyo'))->setTime(0, 0);
+            if ($analysisDate > $today->format('Ymd') || $analysisDate < $today->modify('-6 days')->format('Ymd')) {
+                $violations[] = 'analysisDate: must be within today and the previous six days in JST.';
+            }
+            $times = [];
+            foreach ($entries as $index => $entry) {
+                $times[] = $entry->recordedAt;
+                if (
+                    $entry->recordedAt < $date->modify('-24 hours')
+                    || $entry->recordedAt > $date->modify('+24 hours')
+                ) {
+                    $violations[] = sprintf(
+                        'entries[%d].recordedAt: must be within 24 hours of analysisDate at UTC midnight.',
+                        $index,
+                    );
+                }
+            }
+            if ($times !== [] && max($times) > min($times)->modify('+24 hours')) {
+                $violations[] = 'entries: recordedAt span must not exceed 24 hours.';
+            }
+        }
 
         if ($violations !== []) {
             throw new ApiException(
@@ -70,7 +100,7 @@ final class AnalysisRequestParser
             );
         }
 
-        return new AnalysisRequest($periodStart, $periodEnd, $entries);
+        return new AnalysisRequest($periodStart, $periodEnd, $entries, $analysisDate);
     }
 
     /**

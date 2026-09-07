@@ -116,4 +116,9 @@ $configuration['analysis'] = [
     'analysisRules' => $analysisRules,
 ];
 
+$configuration['integrity'] = [
+    'packageName' => $_ENV['PLAY_INTEGRITY_PACKAGE_NAME'] ?? $_SERVER['PLAY_INTEGRITY_PACKAGE_NAME'] ?? '',
+    'credentialsFile' => $_ENV['PLAY_INTEGRITY_CREDENTIALS_FILE'] ?? $_SERVER['PLAY_INTEGRITY_CREDENTIALS_FILE'] ?? '',
+];
+
 return $configuration;

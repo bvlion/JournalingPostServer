@@ -12,6 +12,8 @@ enum AnalysisClaim
     /** このrequestがAI解析を実行してよい。 */
     case Granted;
 
+    case RateLimited;
+
     /** 同じkeyの解析が処理中である。時間を置いて再送すればよい。 */
     case InProgress;
 

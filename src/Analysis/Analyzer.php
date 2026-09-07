@@ -20,9 +20,9 @@ namespace JournalingPostServer\Analysis;
  *
  * 2. AIへ送信後、処理・課金済みかServerから確定できない失敗。
  *    `AnalysisResultUnconfirmedException`を投げる。`CreateAnalysisAction`は
- *    claimを解放せず、同じkeyの即時retryがAIを再実行して二重課金しない側へ
- *    倒す。送信後timeoutは`504 analysis_timeout`、provider 5xxは4xxと同じ
- *    ユーザー向け応答`503 analysis_unavailable`（ただしclaimは解放しない）。
+ *    claimを解放する。追加call・課金が発生し得るが再試行を許可し、成功済み日
+ *    にはしない。送信後timeoutは`504 analysis_timeout`、provider 5xxは4xxと
+ *    同じユーザー向け応答`503 analysis_unavailable`。
  */
 interface Analyzer
 {

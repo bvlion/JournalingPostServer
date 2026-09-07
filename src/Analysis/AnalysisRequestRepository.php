@@ -8,6 +8,8 @@ use Closure;
 use DateTimeImmutable;
 use PDO;
 use PDOException;
+use DateTimeZone;
+use Throwable;
 
 /**
  * 解析requestのidempotency metadataと、解析結果の引き渡しバッファを扱う。
@@ -43,6 +45,12 @@ final class AnalysisRequestRepository
      */
     public function purgeExpired(DateTimeImmutable $now): int
     {
+        ($this->connection)()->prepare('DELETE FROM analysis_days WHERE analysis_date < :oldest')
+            ->execute(['oldest' => $now->setTimezone(new DateTimeZone('Asia/Tokyo'))
+                ->modify('-6 days')->format('Ymd')]);
+        ($this->connection)()->prepare('DELETE FROM provider_calls WHERE called_at < :oldest')
+            // 次回5分Cronまで含めて35日を超えないよう、5分前から削除する。
+            ->execute(['oldest' => self::formatTimestamp($now->modify('-35 days +5 minutes'))]);
         $statement = ($this->connection)()->prepare(
             'DELETE FROM analysis_requests WHERE expires_at <= :now',
         );
@@ -58,9 +66,8 @@ final class AnalysisRequestRepository
      * 新しいAI呼び出し権を与えない。経過時間だけを根拠に引き継ぐと、前の処理が
      * 動き続けている場合に同じ解析を二重にAIへ投げるためである。
      *
-     * 前の処理がresponseを返さずに終わった場合、そのkeyは`expires_at`まで
-     * 使えない。AI provider側のtimeout特性を踏まえた復帰の制御は、実providerを
-     * 実装するIssue #4で判断する。
+     * 失敗のcatch処理では結果不明も解放する。プロセス強制終了でcatchに
+     * 到達できなかったkeyは`expires_at`まで使えない。
      *
      * `$now`と`$expiresAt`は新しく取得する行へ記録する値である。既存行が失効
      * しているかどうかは`$now`ではなく判定時点の現在時刻で評価する。
@@ -74,27 +81,61 @@ final class AnalysisRequestRepository
         string $fingerprint,
         DateTimeImmutable $now,
         DateTimeImmutable $expiresAt,
+        ?string $analysisDate = null,
     ): AnalysisClaimResult {
-        // 既存行が消えていた場合と、読み出した行が既に失効していた場合は
-        // どちらとも判定できない。その場合だけ取得をやり直す。
-        for ($attempt = 0; $attempt < self::MAX_CLAIM_ATTEMPTS; $attempt++) {
-            $claim = $this->attemptClaim(
-                $installationId,
-                $idempotencyKey,
-                $fingerprint,
-                $now,
-                $expiresAt,
-            );
+        $connection = ($this->connection)();
+        $connection->beginTransaction();
+        try {
+            $lock = $connection->prepare('SELECT id FROM installations WHERE id = ? FOR UPDATE');
+            $lock->execute([$installationId]);
+            for ($attempt = 0; $attempt < self::MAX_CLAIM_ATTEMPTS; $attempt++) {
+                if ($analysisDate !== null) {
+                    $existing = $connection->prepare('SELECT 1 FROM analysis_requests
+                    WHERE installation_id = ? AND idempotency_key = ? AND expires_at > UTC_TIMESTAMP(6)');
+                    $existing->execute([$installationId, $idempotencyKey]);
+                    if ($existing->fetchColumn() === false) {
+                        $success = $connection->prepare('SELECT 1 FROM analysis_days
+                        WHERE installation_id = ? AND analysis_date = ? FOR UPDATE');
+                        $success->execute([$installationId, $analysisDate]);
+                        if ($success->fetchColumn() !== false) {
+                            $connection->commit();
+                            return new AnalysisClaimResult(AnalysisClaim::RateLimited, $now);
+                        }
+                        $running = $connection->prepare('SELECT 1 FROM analysis_requests
+                        WHERE installation_id = ? AND analysis_date = ?
+                          AND completed_at IS NULL AND expires_at > UTC_TIMESTAMP(6)');
+                        $running->execute([$installationId, $analysisDate]);
+                        if ($running->fetchColumn() !== false) {
+                            $connection->commit();
+                            return new AnalysisClaimResult(AnalysisClaim::InProgress, $now);
+                        }
+                    }
+                }
+                // 失効したclaimの再取得でも成功済み日を毎回確認する。
+                $claim = $this->attemptClaim(
+                    $installationId,
+                    $idempotencyKey,
+                    $fingerprint,
+                    $now,
+                    $expiresAt,
+                    $analysisDate,
+                );
 
-            if ($claim !== null) {
-                return $claim;
+                if ($claim !== null) {
+                    $connection->commit();
+                    return $claim;
+                }
             }
-        }
 
-        // 取得できたか判定できないまま解析へ進むと重複課金になり得るため、
-        // 再送を促す側へ倒す。世代を固定できていないので、この結果で
-        // バッファを読んではならない（呼び出し元は409を返す）。
-        return new AnalysisClaimResult(AnalysisClaim::InProgress, $now);
+            // 世代を固定できない場合は再送を促す。
+            $connection->commit();
+            return new AnalysisClaimResult(AnalysisClaim::InProgress, $now);
+        } catch (Throwable $exception) {
+            if ($connection->inTransaction()) {
+                $connection->rollBack();
+            }
+            throw $exception;
+        }
     }
 
     private function attemptClaim(
@@ -103,6 +144,7 @@ final class AnalysisRequestRepository
         string $fingerprint,
         DateTimeImmutable $now,
         DateTimeImmutable $expiresAt,
+        ?string $analysisDate,
     ): ?AnalysisClaimResult {
         $connection = ($this->connection)();
 
@@ -111,9 +153,9 @@ final class AnalysisRequestRepository
                 ->prepare(
                     'INSERT INTO analysis_requests
                         (installation_id, idempotency_key, request_fingerprint,
-                         started_at, expires_at)
+                         started_at, expires_at, analysis_date)
                      VALUES (:installation_id, :idempotency_key, :fingerprint,
-                             :started_at, :expires_at)',
+                             :started_at, :expires_at, :analysis_date)',
                 )
                 ->execute([
                     'installation_id' => $installationId,
@@ -121,6 +163,7 @@ final class AnalysisRequestRepository
                     'fingerprint' => $fingerprint,
                     'started_at' => self::formatTimestamp($now),
                     'expires_at' => self::formatTimestamp($expiresAt),
+                    'analysis_date' => $analysisDate,
                 ]);
 
             return new AnalysisClaimResult(AnalysisClaim::Granted, $now);
@@ -350,5 +393,22 @@ final class AnalysisRequestRepository
     private static function formatTimestamp(DateTimeImmutable $moment): string
     {
         return $moment->format('Y-m-d H:i:s.u');
+    }
+
+    public function recordSuccess(string $installationId, string $analysisDate): void
+    {
+        ($this->connection)()->prepare('INSERT INTO analysis_days (installation_id, analysis_date) VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE analysis_date = VALUES(analysis_date)')
+            ->execute([$installationId, $analysisDate]);
+    }
+
+    /** @param array<string, mixed> $call 本文を含まないproviderの観測値だけ。 */
+    public function recordCall(string $installationId, array $call): void
+    {
+        ($this->connection)()->prepare('INSERT INTO provider_calls
+            (installation_id, called_at, model, input_tokens, cached_input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([$installationId, $call['calledAt'], $call['model'],
+                $call['inputTokens'], $call['cachedInputTokens'], $call['outputTokens']]);
     }
 }

@@ -29,7 +29,7 @@ Android                         Server
 
 自動解析でも同じ流れです。ServerがtriggerAtを持ってFCMでAndroidを起こす構成は採用しません。Serverが持たないのは、FCM token・`triggerAt`・ScheduledTrigger・Push予約・scheduler・timezone・recurrenceです。
 
-AI provider呼び出しは実装済みです。rate limit / usage / 登録endpointのabuse対策は未実装です。
+AI provider呼び出し、成功した対象日単位の利用制御、provider call記録、Play Integrityによる登録確認を実装しています。
 
 ## 共通事項
 
@@ -82,18 +82,25 @@ XServer（Apache）では`Authorization`ヘッダーが既定でPHPへ届きま�
 
 Serverはhashしか持たないため再発行できません。端末がAPI keyを失った場合は再登録し、新しいinstallationになります。過去のAnalysisResultは端末にあるため失われません。
 
-### 検討して採らなかった方式
-
-| 方式 | 採らなかった理由 |
-| --- | --- |
-| Android Keystoreの署名 | 鍵が端末外へ出ない強さはあるが、PHP側の署名検証・nonce・時刻ずれ対応が増える。installation単位のrate limitで足りる想定 |
-| Play Integrity / App Check | 端末とアプリの正当性まで確認できるが、PHP側にGoogle依存と鍵管理が増える。現在の最小構成には重い |
-
-登録endpoint自体のrate limitとabuse対策は未実装です。現時点では登録を無制限に受け付けます。
-
 ## POST /v1/installations
 
-匿名installationを登録し、認証情報を発行します。request bodyは不要です。
+Google Play配布の正規アプリであることをPlay Integrity Standard requestで確認してから登録します。Content-Typeはapplication/json、本文の上限は32 KiBです。
+
+```json
+{
+  "registrationId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "integrityToken": "<Google Playから取得したStandard Integrity token>"
+}
+```
+
+- Androidは登録試行ごとに32 random bytesの小文字hexをregistrationIdとして生成します。人物・端末識別子ではなく、その登録試行だけの一時値です。Serverは保存しません。
+- requestHashはUTF-8の `POST\n/v1/installations\n<packageName>\n<registrationId>` のSHA-256（小文字64桁hex）です。末尾改行は付けません。
+- ServerがGoogleのdecodeIntegrityTokenで検証したrequestPackageNameとappIntegrity.packageNameが設定値に一致し、requestHashが一致し、timestampMillisが過去5分以内かつ未来でないことを要求します。
+- appRecognitionVerdictはPLAY_RECOGNIZED、appLicensingVerdictはLICENSEDを要求します。deviceIntegrityは必須にしません。
+- Standard requestの再利用防止により繰り返し復号されたtokenの判定がUNEVALUATEDになった場合も拒否します。登録応答を失った場合は新しいregistrationIdとtokenを取得してください。
+- token・判定本文・Googleのユーザー情報は保存しません。IP制限、24時間制限、Device Recall、installationを跨ぐ識別子は導入しません。正規アプリのデータ消去や再インストールによる再登録は許容します。
+
+根拠：[Google Standard request](https://developer.android.com/google/play/integrity/standard)、[判定項目](https://developer.android.com/google/play/integrity/verdicts)。
 
 **Response 201**
 
@@ -111,6 +118,10 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 
 対象期間のJournalEntryを解析します。認証と`Idempotency-Key`が必要です。
 
+analysisDateはHosted専用の必須文字列（yyyyMMdd）です。JST当日を含む直近7日だけ受け付け、未来日・7日前以前は422にします。periodは結果の対象期間として維持し、利用制御には使用しません。Custom Webhookの契約には追加しません。
+
+すべてのrecordedAtはanalysisDateのUTC 00:00の前後24時間以内（境界を含む）、最古と最新の差も24時間以内とします。timezoneを送信・保存・推測せず、厳密なローカル日付一致は要求しません。下の例は2026-08-29が受付範囲内の日に使う架空値です。
+
 **Request headers**
 
 | Header | 必須 | 内容 |
@@ -123,6 +134,7 @@ Serverはhashしか持たないため再発行できません。端末がAPI key
 
 ```json
 {
+  "analysisDate": "20260829",
   "period": {
     "start": "2026-08-29T00:00:00Z",
     "end": "2026-08-29T09:00:00Z"
@@ -199,7 +211,7 @@ Hosted解析はOpenAI Responses APIで行います（`JournalingPostServer\Analy
 - `text.format`: strict JSON Schema（`slack_log_emotion_analysis`）。出力は good / bad / emotion / summary / advice の5項目（emotionは感情タイプと0〜100の感情スコアを含む）
 - `store: false`。生成Responseを後から`GET /v1/responses/{id}`で取得するための保存を無効にする設定で、現在の値のまま変更していません。OpenAI側のすべてのデータ保持をゼロにする設定ではありません（下記「OpenAI側のデータ保持」）
 
-ServerはHTTP応答のtop-level `status`が`completed`のResponseだけを構造化結果の成功候補にします。`status`が`incomplete`（例: `incomplete_details.reason` = `max_output_tokens`）や`failed`のResponseは、schema-validなoutput_textを含んでいても成功にせず、OpenAI呼び出し済みで結果を確定できない失敗として扱います（claimを解放しない。下記「AIへ送信後、結果を確定できない失敗」）。
+ServerはHTTP応答のtop-level `status`が`completed`のResponseだけを構造化結果の成功候補にします。`status`が`incomplete`（例: `incomplete_details.reason` = `max_output_tokens`）や`failed`のResponseは、schema-validなoutput_textを含んでいても成功にせず、OpenAI呼び出し済みで結果を確定できない失敗として扱います（claimを解放して再試行可能にする。下記「AIへ送信後、結果を確定できない失敗」）。
 
 ### OpenAIへ送る内容
 
@@ -234,8 +246,8 @@ ZDRを有効化する場合はデプロイ運用（`docs/production-environment.
 - `Idempotency-Key`はinstallationごとのスコープです。大文字小文字を区別するため、`Example_Key_1234`と`example_key_1234`は別のkeyです。
 - Serverは検証後のrequestを正規化し、その鍵付きhash（HMAC-SHA-256）で同じkeyのrequestが同一内容かを判定します。timezone表記やキー順序の違いは同一とみなし、entryの内容・件数・順序の違いは別とみなします。
 - 鍵にはServerだけが持つ秘密値を使い、hashはinstallation単位にscopeします。素のhashだと、mood 1件だけのrequestのように入力空間が狭い場合に、DBを読める側が候補を列挙して突き合わせ、JournalEntryの内容を言い当てられるためです。Androidはこの値を送らず、受け取りません。
-- **network timeout等での再送**は、同じ`Idempotency-Key`と同じbodyで送ります。AIは再度呼ばれません。
-- **ユーザーが意図した再解析**は、新しい`Idempotency-Key`で送ります。AIが再度呼ばれます。
+- **network timeout等での再送**は、同じ`Idempotency-Key`と同じbodyで送ります。成功結果がbufferにあればAIは再度呼ばれません。結果不明の失敗後は再実行するため、追加課金が発生し得ます。
+- 同じinstallation + analysisDateで成功した解析は1回だけです。新しいkeyでも成功済み日は429 rate_limitedです。別の日次・月次回数bucketはありません。
 
 ### 再送に対するServerの応答
 
@@ -245,7 +257,8 @@ ZDRを有効化する場合はデプロイ運用（`docs/production-environment.
 | 処理中（完了していない） | `409 analysis_in_progress` + `Retry-After: 15` |
 | 完了済み・保持期間内 | 初回と同じbodyを`200`で返す（AIは呼ばない） |
 | 同じkeyで別内容 | `409 idempotency_key_reuse` |
-| 保持期間切れ | 新しいrequestとして扱い、AI解析を実行して`200` |
+| 保持期間切れ・成功済み日 | `429 rate_limited`（AIは呼ばない） |
+| 保持期間切れ・成功していない日 | 受付可能日の範囲内なら新しい解析を実行 |
 
 保持期間切れの判定はcleanupの実行有無に依存しません。上記の判定時にも失効を確認し、失効していれば行と本文を削除してから新しいrequestとして扱います。失効した結果が`200`で返ることはありません。
 
@@ -261,25 +274,17 @@ ZDRを有効化する場合はデプロイ運用（`docs/production-environment.
 
 失効後に同じkeyで新しい解析が始まった後で、古い処理が遅れて終わることがあります。この場合、古い処理は新しい解析の完了記録も引き渡しバッファも書き換えません。完了記録・バッファ書き込み・解放のいずれも、自分が取得したclaim（取得時刻が一致し、まだ完了していない行）だけを対象にします。古い結果が新しいrequestの応答として返ることはありません。
 
-OpenAI呼び出しがtimeoutした場合など、requestを送信した後で処理・課金済みかをServerから確定できない失敗では、claimを解放しません。解放すると同じkeyの即時retryがOpenAIを再実行して二重に課金し得るためです。この場合はその世代のclaimが保持期間（30分）で失効するまで`409 analysis_in_progress`を返し、失効後は新しい解析として受け付けます。詳細は次節。
-
 ### AIへ送信後、結果を確定できない失敗
 
-Serverは解析の失敗を2種類に分けて扱います。
+未到達、provider 4xx、送信後のtimeout、受信途絶、provider 5xx、利用可能な結果を取得できない2xxは、claimを解放して再試行可能にします。結果不明を成功済み日として消費しません。timeoutは504 analysis_timeout、provider 4xx/5xx・未到達は503 analysis_unavailable、それ以外の結果不明は500 internal_errorです。
 
-1. **AIが成功していないと確定できる失敗**（requestがOpenAIへ到達しなかった、OpenAIが4xx〈`429`等を含む〉を返した等。いずれも処理前の拒否と確定できます）。claimを解放し、同じ`Idempotency-Key`での再送をそのまま再実行できるようにします。応答は`503 analysis_unavailable`です。
-2. **OpenAIへ送信後、処理・課金済みかServerから確定できない失敗**（送信後のtimeout・応答受信の途絶・**OpenAIの5xx応答**・2xxだが生成結果を利用できない）。claimを解放しません。timeoutは`504 analysis_timeout`、5xxは4xxと同じ`503 analysis_unavailable`、それ以外は`500 internal_error`を返します。AI解析が成功した後に応答の組み立てや完了記録でServer内部エラーが起きた場合（`500 internal_error`）も同じ扱いです。5xxは、OpenAIがrequestを受理・処理した後の一時的な5xxか処理前の拒否かをHTTPエラー応答だけからは確定できないため、生成・課金が行われた可能性がある側へ倒します。いずれもAI呼び出しは課金され得るため、解放してretryが即座にAIを再実行するのを避けます。
-
-Androidの扱いは`504` / `500`の契約どおり、また5xx由来の`503`（`Retry-After`後に同じkeyで再送）も、いずれも**同じ`Idempotency-Key`で再送**します。新しいkeyへ切り替えないでください。新しいkeyはユーザーが意図した再解析のためのものです。
-
-同じkeyでの再送は、保持期間（30分）の間`409 analysis_in_progress`になる場合があります。処理は動いていませんが、二重課金を避けるためclaimを保持している状態です。失効後の再送は新しい解析として受け付けます。
+AI成功後は、応答の組み立てやbuffer保存より先に成功済み日を記録します。成功済み日は再実行せず、buffer期限後は通常お問い合わせから運用者が確認します。既知の失敗を30分間抑止することはありません。プロセスが強制終了し失敗処理自体が走らない場合、未完了claimは開始から30分で失効します。
 
 ### timeout
 
 - Serverは`OPENAI_TIMEOUT_SECONDS`でOpenAI呼び出しのtimeoutを設定します。これを超えると`504 analysis_timeout`を返します。実測（下記「本番timeoutの決定」）から **本番値は `45` 秒** とします。
 - **Androidの読み取りtimeoutは `90` 秒を推奨します。** Serverが`504`を返すまでの上限は `OPENAI_TIMEOUT_SECONDS`（45秒）＋ request解析・応答整形・DB書き込みの数秒 ≈ 50秒で、90秒はその上に余裕を持たせた値です。Android側の実測後に短縮して構いません。
-- timeout（`504`）したrequestは、`Retry-After`に従って同じ`Idempotency-Key`で再送してください。送信済みのAI呼び出しを二重課金しないため、Serverはその世代のclaimを保持し、保持期間（30分）内の再送は`409 analysis_in_progress`になり得ます。
-- 保持期間（30分）を過ぎてからの再送は新しい解析になります。それより後にretryしないでください。
+- timeoutしたrequestは同じkeyで再試行可能です。Androidの短時間自動retryはnetwork / timeout / 5xx / analysis_in_progressに限り、30分bufferを活かす範囲に留めます。429は自動retryしません。Android実装はJournalingPost #86の対象です。
 
 #### 本番timeoutの決定
 
@@ -306,7 +311,7 @@ XServer上でproduction実装（`OpenAiAnalyzer` / `CurlResponsesTransport`）�
 
 web `max_execution_time` は本番サーバーパネルで **30秒** を確認しました（PHP 8.5.9 / `display_errors` OFF）。30秒のまま維持しています。Linux版PHPでは system call・stream operation・DB query 等の待機時間が `max_execution_time` の計測対象に含まれないため、OpenAI 呼び出し（curl / socket 待ち）の待機時間は 30秒 の対象外であり、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較しません。CLI PHP は `max_execution_time = 0`（無制限）ですが API は web SAPI で動きます。
 
-本番配置後のsmoke testで、実サイズの `POST /v1/analyses` が本番 web request 内で完了し、通常の成功ケースが XServer の Web / FastCGI / front proxy の wall-clock timeout で先に切られないことを確認しました。遅いケースで Server 側の `504 analysis_timeout`（claim 非解放）が外側の timeout より先に発火することの実証（意図的な provider timeout / fault injection）は、この確認の対象外です。OpenAI 側のリクエスト timeout は意図的に発生させていません（`max_output_tokens: 800` / `reasoning: none` で生成は短く、超過時は `status: incomplete` として扱われます）。
+本番配置後のsmoke testで、実サイズの `POST /v1/analyses` が本番 web request 内で完了し、通常の成功ケースが XServer の Web / FastCGI / front proxy の wall-clock timeout で先に切られないことを確認しました。遅いケースで Server 側の `504 analysis_timeout`（結果不明時は再試行可能）が外側の timeout より先に発火することの実証（意図的な provider timeout / fault injection）は、この確認の対象外です。OpenAI 側のリクエスト timeout は意図的に発生させていません（`max_output_tokens: 800` / `reasoning: none` で生成は短く、超過時は `status: incomplete` として扱われます）。
 
 ## Error response
 
@@ -335,16 +340,18 @@ web `max_execution_time` は本番サーバーパネルで **30秒** を確認�
 | 405 | `method_not_allowed` | pathに対して不正なHTTP method | retryしない |
 | 409 | `analysis_in_progress` | 同じkeyの解析が処理中 | `Retry-After`後に同じkeyで再送 |
 | 409 | `idempotency_key_reuse` | 同じkeyを別内容のrequestで使った | クライアントの誤り。retryしない |
-| 409 | `analysis_result_unavailable` | 完了記録はあるが結果を返せない | 新しいkeyでの再解析が必要 |
+| 409 | `analysis_result_unavailable` | 完了記録はあるが結果を返せない | 通常お問い合わせでSupport IDと対象日を連絡 |
 | 413 | `payload_too_large` | request bodyが上限超過 | 対象期間を分けて送る |
 | 415 | `unsupported_media_type` | `Content-Type`が`application/json`でない | retryしない |
 | 422 | `validation_error` | request契約違反 | retryしない |
-| 429 | `rate_limited` | 利用上限（未実装） | `Retry-After`後に同じkeyで再送 |
+| 429 | `rate_limited` | 同じinstallationの対象日が成功済み | 自動retryしない。Retry-Afterは付けない |
+| 403 | `registration_rejected` | Play Integrityの判定が条件を満たさない | 正規のPlay配布版とライセンスを確認 |
+| 503 | `registration_unavailable` | 登録確認サービス・設定が利用不能 | 新しいtokenで再試行 |
 | 500 | `internal_error` | Server側の想定外エラー | 間隔を空けて同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある。上記参照） |
-| 503 | `analysis_unavailable` | AI providerが利用できない（provider未到達・4xx・5xx） | `Retry-After`後に同じkeyで再送（5xx由来の場合は保持期間内は`409 analysis_in_progress`になり得る） |
-| 504 | `analysis_timeout` | AI解析が`OPENAI_TIMEOUT_SECONDS`内に終わらない | 同じkeyで再送（保持期間内は`409 analysis_in_progress`になる場合がある） |
+| 503 | `analysis_unavailable` | AI providerが利用できない（provider未到達・4xx・5xx） | `Retry-After`後に同じkeyで再送 |
+| 504 | `analysis_timeout` | AI解析が`OPENAI_TIMEOUT_SECONDS`内に終わらない | 同じkeyで再送（追加provider callが発生し得る） |
 
-`429`は契約として予約していますが未実装です。`504`は実装済みです。
+
 
 エラーの種類にかかわらず、AndroidはJournalEntryをローカルに保持し続けます。解析に失敗しても記録は失われません。
 
@@ -353,8 +360,10 @@ web `max_execution_time` は本番サーバーパネルで **30秒** を確認�
 | テーブル | 内容 | 失効 |
 | --- | --- | --- |
 | `installations` | Server内部のinstallation識別子、API keyのSHA-256、作成日時 | 失効しない（installationが使われている間） |
-| `analysis_requests` | installation識別子、`Idempotency-Key`、requestの鍵付きhash、開始・完了・失効日時 | 解析完了から30分。完了しなかった場合は開始から30分 |
+| `analysis_requests` | installation識別子、analysisDate、`Idempotency-Key`、requestの鍵付きhash、開始・完了・失効日時 | 解析完了から30分。失敗時は解放。強制終了等で残った場合は開始から30分 |
 | `analysis_deliveries` | 解析結果のresponse body | `analysis_requests`の行と一緒に失効・削除 |
+| `analysis_days` | installation識別子、成功済みanalysisDate | JST直近7日の対象外になった後に定期削除 |
+| `provider_calls` | installation識別子、呼出日時、取得できたmodel・input/cached input/output token数 | 前月分を月次出力後に削除。定期cleanupでも35日超過分を削除 |
 
 - JournalEntry本文をDBへ保存しません。request処理中のメモリ上にだけ存在します。
 - AnalysisResult本文の原本はServerに置きません。再送へ同じ結果を返すためだけに、引き渡しバッファへ保持期間の間だけ残します。
@@ -389,8 +398,9 @@ AI呼び出しは`JournalingPostServer\Analysis\Analyzer`の1点に閉じてい�
 ## 未実装・対象外
 
 - provider呼び出し自体の打ち切り（Serverはtimeout時にconnection側で打ち切り、`504`を返す。呼び出しのキャンセル通知はOpenAIへ送らない）
-- rate limit、usage集計、登録endpointのabuse対策
 - account / profile、timezone、recurrence、entitlement、広告状態
 - JournalEntry / AnalysisResultのクラウド保存
 
 FCM token・`triggerAt`・ScheduledTrigger・Push予約・Server側schedulerは、未実装という位置づけではなく、最終仕様として持たないものです。
+
+利用記録の確認・原価換算・月次出力・個別解除の手順は[Hosted利用制御の運用](hosted-usage-operations.md)を参照してください。
