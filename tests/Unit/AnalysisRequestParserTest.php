@@ -365,6 +365,7 @@ final class AnalysisRequestParserTest extends TestCase
     public function testValidBoundaryTimestampsAreAccepted(): void
     {
         $request = self::parse([
+            'analysisDate' => '20240301',
             'period' => [
                 'start' => '2024-02-29T00:00:00Z',
                 'end' => '2024-03-01T23:59:59.999999+13:45',
@@ -403,6 +404,7 @@ final class AnalysisRequestParserTest extends TestCase
         );
 
         try {
+            $payload->analysisDate = '20260829';
             AnalysisRequestParser::parse($payload);
         } catch (ApiException $exception) {
             self::assertSame(422, $exception->status());
@@ -495,6 +497,7 @@ final class AnalysisRequestParserTest extends TestCase
      */
     private static function parse(array $payload): AnalysisRequest
     {
+        $payload += ['analysisDate' => '20260829'];
         return AnalysisRequestParser::parse(
             json_decode(
                 json_encode((object) $payload, JSON_THROW_ON_ERROR),

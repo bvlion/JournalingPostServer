@@ -21,6 +21,7 @@ final class AnalysisRequest
         public readonly DateTimeImmutable $periodStart,
         public readonly DateTimeImmutable $periodEnd,
         public readonly array $entries,
+        public readonly ?string $analysisDate = null,
     ) {
     }
 
@@ -44,6 +45,7 @@ final class AnalysisRequest
     public function fingerprint(string $installationId, string $secret): string
     {
         $canonical = [
+            'analysisDate' => $this->analysisDate,
             'period' => [
                 'start' => self::canonicalTimestamp($this->periodStart),
                 'end' => self::canonicalTimestamp($this->periodEnd),

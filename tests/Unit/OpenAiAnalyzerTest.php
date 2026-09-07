@@ -311,7 +311,7 @@ RULES;
                 self::fail(sprintf('%d でApiExceptionが投げられませんでした。', $status));
             } catch (AnalysisResultUnconfirmedException $exception) {
                 self::fail(sprintf(
-                    '%d を結果不明（claim非解放）にしてはいけません。',
+                    '%d を結果不明にしてはいけません。',
                     $status,
                 ));
             } catch (ApiException $exception) {
@@ -340,7 +340,7 @@ RULES;
     /**
      * provider 5xx は、HTTPエラー応答を受け取っただけではOpenAI側で生成・課金が
      * 行われていないと確定できない。結果不明として`AnalysisResultUnconfirmedException`
-     * で扱い、`CreateAnalysisAction`がclaimを解放しない。ユーザー向け応答は4xxと
+     * で扱い、`CreateAnalysisAction`がclaimを解放して再試行可能にする。ユーザー向け応答は4xxと
      * 同じ`503 analysis_unavailable`。raw bodyやAPI keyは漏らさない。
      */
     public function testProviderFiveXxIsReportedAsUnconfirmed(): void
@@ -385,7 +385,7 @@ RULES;
 
     /**
      * timeout等の結果不明ケースは、AnalysisResultUnconfirmedExceptionで
-     * 504 analysis_timeoutへ対応させる（claimは呼び出し元が解放しない）。
+     * 504 analysis_timeoutへ対応させる（claimは呼び出し元が解放する）。
      */
     public function testTimeoutIsReportedAsAnUnconfirmedResult(): void
     {
@@ -452,7 +452,7 @@ RULES;
      * しない。`status` = `incomplete`（`incomplete_details.reason` =
      * `max_output_tokens`）でschema-validなoutput_textが含まれていても、
      * OpenAI呼び出し済みで結果を確定できないため`AnalysisResultUnconfirmedException`
-     * 側へ倒し、claimを解放しない。
+     * 側へ倒し、claimを解放して再試行可能にする。
      */
     public function testHttpTwoHundredWithIncompleteStatusIsNotTreatedAsSuccess(): void
     {

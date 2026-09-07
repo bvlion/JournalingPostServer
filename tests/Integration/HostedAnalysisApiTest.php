@@ -20,6 +20,8 @@ use JournalingPostServer\Tests\Integration\Support\DatabaseTestCase;
 use JournalingPostServer\Tests\Integration\Support\CountingStream;
 use JournalingPostServer\Tests\Integration\Support\FakeAnalyzer;
 use JournalingPostServer\Tests\Support\FakeResponsesTransport;
+use JournalingPostServer\Tests\Support\IntegrityFixture;
+use JournalingPostServer\Installation\InstallationRepository;
 use PDO;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamInterface;
@@ -132,6 +134,26 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         );
     }
 
+    public function testHostedAnalysisRestrictsAnalysisDateToCurrentSevenJstDays(): void
+    {
+        $apiKey = $this->register();
+        foreach (['-7 days', '+1 day'] as $modifier) {
+            $date = new DateTimeImmutable($modifier, new \DateTimeZone('Asia/Tokyo'));
+            $payload = self::requestPayload();
+            $payload['analysisDate'] = $date->format('Ymd');
+            foreach ($payload['entries'] as &$entry) {
+                $entry['recordedAt'] = $date->format('Y-m-d') . 'T01:00:00Z';
+            }
+            unset($entry);
+
+            $response = $this->analyse($apiKey, key: self::OTHER_KEY, payload: $payload);
+
+            self::assertSame(422, $response->getStatusCode());
+            self::assertSame('validation_error', self::payload($response)['error']['code']);
+        }
+        self::assertSame(0, $this->analyzer->callCount);
+    }
+
     /**
      * responseがnetworkで失われた場合の再送。AIを再度呼ばずに同じ結果を返す。
      */
@@ -167,14 +189,45 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     /**
      * ユーザーが意図して再解析する場合は、別のIdempotency-Keyで区別する。
      */
-    public function testDeliberateReanalysisUsesADifferentKey(): void
+    public function testSuccessfulDateRejectsADifferentKey(): void
     {
         $apiKey = $this->register();
         $this->analyse($apiKey);
         $response = $this->analyse($apiKey, key: self::OTHER_KEY);
 
-        self::assertSame(200, $response->getStatusCode());
-        self::assertSame(2, $this->analyzer->callCount);
+        self::assertSame(429, $response->getStatusCode());
+        self::assertSame(1, $this->analyzer->callCount);
+    }
+
+    public function testProviderUsageAndUnknownCallsRemainSeparateFromSuccessfulDates(): void
+    {
+        $apiKey = $this->register();
+        $transport = new FakeResponsesTransport();
+        $analyzer = self::openAiAnalyzer($transport);
+        $transport->willBeUnreachable();
+        self::assertSame(503, $this->analyse($apiKey, analyzer: $analyzer)->getStatusCode());
+        self::assertSame(0, $this->countRows('provider_calls'));
+        $transport->willTimeOut();
+        self::assertSame(504, $this->analyse($apiKey, analyzer: $analyzer)->getStatusCode());
+        $body = json_decode(self::openAiResponsesBody(), true, flags: JSON_THROW_ON_ERROR);
+        $body['model'] = 'example-model';
+        $body['usage'] = ['input_tokens' => 100, 'output_tokens' => 20,
+            'input_tokens_details' => ['cached_tokens' => 10]];
+        $transport->willReturn(200, json_encode($body, JSON_THROW_ON_ERROR));
+        self::assertSame(200, $this->analyse($apiKey, analyzer: $analyzer)->getStatusCode());
+        self::assertSame(200, $this->analyse($apiKey, analyzer: $analyzer)->getStatusCode());
+        self::assertSame(429, $this->analyse($apiKey, key: self::OTHER_KEY, analyzer: $analyzer)->getStatusCode());
+        self::assertSame(3, $transport->callCount);
+        $calls = $this->connection->query('SELECT * FROM provider_calls ORDER BY id')->fetchAll();
+        self::assertCount(2, $calls);
+        self::assertNull($calls[0]['input_tokens']);
+        self::assertNull($calls[0]['output_tokens']);
+        self::assertNull($calls[0]['model']);
+        self::assertSame(100, $calls[1]['input_tokens']);
+        self::assertSame(10, $calls[1]['cached_input_tokens']);
+        self::assertSame(20, $calls[1]['output_tokens']);
+        self::assertSame('example-model', $calls[1]['model']);
+        self::assertSame(1, $this->countRows('analysis_days'));
     }
 
     public function testConcurrentRequestWithTheSameKeyIsAskedToRetry(): void
@@ -441,7 +494,14 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         self::assertNotSame(self::KEY, $upperCaseKey);
 
         $first = $this->analyse($apiKey);
-        $second = $this->analyse($apiKey, key: $upperCaseKey);
+        $payload = self::requestPayload();
+        $yesterday = new DateTimeImmutable('yesterday', new \DateTimeZone('Asia/Tokyo'));
+        $payload['analysisDate'] = $yesterday->format('Ymd');
+        foreach ($payload['entries'] as &$entry) {
+            $entry['recordedAt'] = $yesterday->format('Y-m-d') . 'T01:00:00Z';
+        }
+        unset($entry);
+        $second = $this->analyse($apiKey, key: $upperCaseKey, payload: $payload);
 
         self::assertSame(200, $first->getStatusCode());
         self::assertSame(200, $second->getStatusCode());
@@ -568,6 +628,10 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         $firstGeneration = $this->storedStartedAt();
         $this->expireStoredAnalyses();
 
+        // 運用者による対象日の解除後に新しい世代が始まる場合を再現する。
+        $this->connection->prepare('DELETE FROM analysis_days WHERE installation_id = ? AND analysis_date = ?')
+            ->execute([$this->installationId(), self::requestPayload()['analysisDate']]);
+
         // 同じkey・同じbodyを、失効後に新しい世代として解析する。
         $this->analyzer->behaveAs(
             static fn (AnalysisRequest $request): Analysis => new Analysis(
@@ -629,10 +693,9 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * timeout等、送信後に結果を確定できない失敗ではclaimを解放しない。同じkeyの
-     * 即時retryはAIを再実行せず、保持期間内は409 analysis_in_progressになる。
+     * 結果不明を成功済み日として扱わず、追加callを記録して即時再試行する。
      */
-    public function testUnconfirmedResultKeepsTheClaimAndBlocksImmediateReanalysis(): void
+    public function testUnconfirmedResultAllowsImmediateReanalysis(): void
     {
         $apiKey = $this->register();
         $transport = new FakeResponsesTransport();
@@ -646,24 +709,16 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             'analysis_timeout',
             self::payload($timedOut)['error']['code'],
         );
-        // claimは残る（解放しない）。
-        self::assertSame(1, $this->countRows('analysis_requests'));
-        self::assertNull(
-            $this->connection
-                ->query('SELECT completed_at FROM analysis_requests')
-                ->fetchColumn(),
-        );
-
-        // 即時retryはAIを再実行しない。
+        self::assertSame(0, $this->countRows('analysis_requests'));
+        self::assertSame(0, $this->countRows('analysis_days'));
+        self::assertSame(1, $this->countRows('provider_calls'));
         $transport->willReturn(200, self::openAiResponsesBody());
         $retry = $this->analyse($apiKey, analyzer: $analyzer);
 
-        self::assertSame(409, $retry->getStatusCode());
-        self::assertSame(
-            'analysis_in_progress',
-            self::payload($retry)['error']['code'],
-        );
-        self::assertSame(1, $transport->callCount);
+        self::assertSame(200, $retry->getStatusCode());
+        self::assertSame(2, $transport->callCount);
+        self::assertSame(2, $this->countRows('provider_calls'));
+        self::assertSame(1, $this->countRows('analysis_days'));
     }
 
     /**
@@ -704,12 +759,9 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
     }
 
     /**
-     * provider 5xx はHTTPエラー応答を受け取っただけでは生成・課金の有無を確定
-     * できない。ユーザー向け応答は4xxと同じ`503 analysis_unavailable`だが、
-     * claimは解放しない。同じIdempotency-Keyの即時retryはAIを再実行せず、
-     * 保持期間内は`409 analysis_in_progress`になる。raw bodyは応答へ出さない。
+     * provider 5xxも再試行可能とし、失敗と成功を別callとして記録する。
      */
-    public function testProviderFiveXxKeepsTheClaimAndBlocksImmediateReanalysis(): void
+    public function testProviderFiveXxAllowsImmediateReanalysis(): void
     {
         $apiKey = $this->register();
         $transport = new FakeResponsesTransport();
@@ -730,24 +782,12 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             'upstream detail must not leak',
             (string) $failed->getBody(),
         );
-        // claimは残る（解放しない）。
-        self::assertSame(1, $this->countRows('analysis_requests'));
-        self::assertNull(
-            $this->connection
-                ->query('SELECT completed_at FROM analysis_requests')
-                ->fetchColumn(),
-        );
-
-        // 即時retryはAIを再実行しない。
+        self::assertSame(0, $this->countRows('analysis_requests'));
         $transport->willReturn(200, self::openAiResponsesBody());
         $retry = $this->analyse($apiKey, analyzer: $analyzer);
 
-        self::assertSame(409, $retry->getStatusCode());
-        self::assertSame(
-            'analysis_in_progress',
-            self::payload($retry)['error']['code'],
-        );
-        self::assertSame(1, $transport->callCount);
+        self::assertSame(200, $retry->getStatusCode());
+        self::assertSame(2, $transport->callCount);
     }
 
     /**
@@ -957,7 +997,10 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
         self::assertSame(422, $response->getStatusCode());
         self::assertSame('validation_error', $error['code']);
-        self::assertSame(['entries: must be an array.'], $error['details']);
+        self::assertSame([
+            'entries: must be an array.',
+            'analysisDate: must be a calendar date in yyyyMMdd format.',
+        ], $error['details']);
         self::assertSame(0, $this->analyzer->callCount);
     }
 
@@ -1036,6 +1079,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
                 'started_at',
                 'completed_at',
                 'expires_at',
+                'analysis_date',
             ],
             array_keys($requests[0]),
         );
@@ -1113,9 +1157,9 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
         $response = $this->analyse($apiKey);
 
-        self::assertSame(200, $response->getStatusCode());
-        self::assertSame(2, $this->analyzer->callCount);
-        self::assertSame(1, $this->countRows('analysis_deliveries'));
+        self::assertSame(429, $response->getStatusCode());
+        self::assertSame(1, $this->analyzer->callCount);
+        self::assertSame(0, $this->countRows('analysis_deliveries'));
     }
 
     /**
@@ -1199,9 +1243,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
 
     private function register(): string
     {
-        return self::payload(
-            $this->send('POST', '/v1/installations'),
-        )['installation']['apiKey'];
+        return (new InstallationRepository(fn (): PDO => $this->connection))->register(new DateTimeImmutable('now'));
     }
 
     /**
@@ -1225,6 +1267,15 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             $headers['Authorization'] = 'Bearer ' . $apiKey;
         }
 
+        if ($payload !== null) {
+            $date = new DateTimeImmutable('now', new \DateTimeZone('Asia/Tokyo'));
+            $payload += ['analysisDate' => $date->format('Ymd')];
+        }
+        if ($payload !== null || $body !== null) {
+            $body = $body ?? json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+            $today = (new DateTimeImmutable('now', new \DateTimeZone('Asia/Tokyo')))->format('Y-m-d');
+            $body = preg_replace('/("recordedAt"\s*:\s*")2026-08-29/', '${1}' . $today, $body);
+        }
         return $this->send(
             'POST',
             '/v1/analyses',
@@ -1266,6 +1317,14 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
             );
         }
 
+        if ($path === '/v1/installations') {
+            $fixture = new IntegrityFixture();
+            $request = $request->withHeader('Content-Type', 'application/json')
+                ->withBody((new StreamFactory())->createStream(json_encode([
+                'registrationId' => $fixture->registrationId, 'integrityToken' => 'fake-integrity-token',
+            ], JSON_THROW_ON_ERROR)));
+            return $createApplication($analyzer, $fixture->verifier())->handle($request);
+        }
         return $createApplication($analyzer)->handle($request);
     }
 
@@ -1313,18 +1372,20 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
      */
     private static function requestPayload(string $note = self::NOTE): array
     {
+        $date = new DateTimeImmutable('now', new \DateTimeZone('Asia/Tokyo'));
         return [
+            'analysisDate' => $date->format('Ymd'),
             'period' => [
                 'start' => '2026-08-29T00:00:00Z',
                 'end' => '2026-08-29T09:00:00Z',
             ],
             'entries' => [
                 [
-                    'recordedAt' => '2026-08-29T01:15:00Z',
+                    'recordedAt' => $date->format('Y-m-d') . 'T01:15:00Z',
                     'mood' => ['emoji' => '😐', 'label' => '架空の気分'],
                 ],
                 [
-                    'recordedAt' => '2026-08-29T05:40:00Z',
+                    'recordedAt' => $date->format('Y-m-d') . 'T05:40:00Z',
                     'mood' => ['emoji' => '🙂', 'label' => '架空の気分'],
                     'note' => $note,
                 ],

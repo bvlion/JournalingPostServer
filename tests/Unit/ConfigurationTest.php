@@ -40,6 +40,10 @@ final class ConfigurationTest extends TestCase
                     'openAiApiKey' => 'sk-example-not-a-real-openai-key',
                     'openAiTimeoutSeconds' => 45,
                 ],
+                'integrity' => [
+                    'packageName' => 'example.journaling.app',
+                    'credentialsFile' => '',
+                ],
             ],
             $configuration,
         );

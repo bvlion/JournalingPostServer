@@ -14,6 +14,7 @@ use JournalingPostServer\Analysis\AnalysisRequestParser;
 use JournalingPostServer\Analysis\AnalysisRequestRepository;
 use JournalingPostServer\Analysis\AnalysisResultUnconfirmedException;
 use JournalingPostServer\Analysis\Analyzer;
+use JournalingPostServer\Analysis\OpenAi\OpenAiAnalyzer;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use stdClass;
@@ -80,6 +81,18 @@ final class CreateAnalysisAction
         $analysisRequest = self::readAnalysisRequest($request);
 
         $now = new DateTimeImmutable('now');
+        $today = $now->setTimezone(new DateTimeZone('Asia/Tokyo'))->setTime(0, 0);
+        if (
+            $analysisRequest->analysisDate > $today->format('Ymd')
+            || $analysisRequest->analysisDate < $today->modify('-6 days')->format('Ymd')
+        ) {
+            throw new ApiException(
+                422,
+                'validation_error',
+                'The request does not satisfy the analysis request contract.',
+                ['analysisDate: must be within today and the previous six days in JST.'],
+            );
+        }
         // 失効した本文を返さないよう、判定の前に削除する。requestが来ない
         // 期間の削除はXServer Cron（bin/prune-expired-analyses.php）が行う。
         $this->analysisRequests->purgeExpired($now);
@@ -93,7 +106,12 @@ final class CreateAnalysisAction
             ),
             $now,
             self::expiry($now),
+            $analysisRequest->analysisDate,
         );
+
+        if ($claim->status === AnalysisClaim::RateLimited) {
+            throw new ApiException(429, 'rate_limited', 'This analysis date has already succeeded.');
+        }
 
         if ($claim->status === AnalysisClaim::KeyReuse) {
             throw new ApiException(
@@ -146,14 +164,11 @@ final class CreateAnalysisAction
     ): string {
         try {
             $analysis = $this->analyzer->analyze($analysisRequest);
+            // 本文の整形・buffer保存に失敗しても、成功した日を再実行させない。
+            $this->analysisRequests->recordSuccess($installationId, $analysisRequest->analysisDate);
         } catch (AnalysisResultUnconfirmedException $exception) {
-            // OpenAIへ送信後、処理・課金済みかServerから確定できない失敗
-            // （timeout・応答受信の途絶・provider 5xx・2xxだが生成結果を
-            // 利用できない）。
-            // claimを解放すると、同じIdempotency-KeyのretryがOpenAIを再実行して
-            // 二重課金し得る。解放せず、失効（保持期間）までこのkeyへ新しい
-            // 呼び出し権を与えない。保持期間内の再送は409 analysis_in_progress
-            // になる。provider固有の状態はidempotency repositoryへ持ち込まない。
+            // 結果不明も再試行可能。追加callが発生しても成功済み日にはしない。
+            $this->analysisRequests->release($installationId, $idempotencyKey, $claimedAt);
             throw $exception->response();
         } catch (Throwable $exception) {
             // AIが成功していないと確定できる失敗。解析できなかった
@@ -166,6 +181,10 @@ final class CreateAnalysisAction
             );
 
             throw $exception;
+        } finally {
+            if ($this->analyzer instanceof OpenAiAnalyzer && $this->analyzer->lastCall !== null) {
+                $this->analysisRequests->recordCall($installationId, $this->analyzer->lastCall);
+            }
         }
 
         $responseBody = JsonResponse::encode([

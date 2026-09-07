@@ -78,7 +78,7 @@ XServer上の検証ディレクトリ（本番配置とは分離）で、product
 
 web `max_execution_time` は本番サーバーパネルで **30秒**（PHP 8.5.9 / `display_errors` OFF）。30秒のまま維持した。Linux版PHPでは system call・stream operation・DB query 等の待機時間が `max_execution_time` の計測対象に含まれないため、OpenAI 呼び出し（curl / socket 待ち）や DB query の待機は 30秒 の対象外であり、この値を `OPENAI_TIMEOUT_SECONDS = 45` と単純比較して変更要否を判断しない。
 
-実HTTP経路の wall-clock 側の上限（XServer の Web / FastCGI / front proxy 制約）については、本番配置後のsmoke testで **通常の成功ケースが本番 web request 内で完了し、外側の timeout で先に切られないこと**を確認した。遅いケースで Server 側の `504`（claim 非解放）が外側 timeout より先に発火することの実証（意図的な provider timeout / fault injection）は、この確認の対象外とする。
+実HTTP経路の wall-clock 側の上限（XServer の Web / FastCGI / front proxy 制約）については、本番配置後のsmoke testで **通常の成功ケースが本番 web request 内で完了し、外側の timeout で先に切られないこと**を確認した。遅いケースで Server 側の `504`（結果不明時は再試行可能）が外側 timeout より先に発火することの実証（意図的な provider timeout / fault injection）は、この確認の対象外とする。
 
 ## SSHとデプロイ
 
@@ -128,3 +128,7 @@ cd <deploy-root>/current && /opt/php-8.5.5/bin/php bin/prune-expired-analyses.ph
 
 - 意図的な provider timeout / fault injection の実証（遅いケースで Server 側 `504` が外側 timeout より先に発火することの確認。現在の本番確認の対象外）
 - AI agent による本番環境への接続・デプロイ実行。デプロイ機構の実装と、production非接続で確認できる範囲の検証（`make check`、deploy scriptの構文・shellcheck、release作成/切替/失敗時挙動のローカル模擬）はrepository側で行い、鍵の生成・Secret登録・初回セットアップ・タグpush・ロールバックは利用者が実行する（`AGENTS.md`）。
+
+## Hosted利用制御の追加配置
+
+Play Integrityの設定、追加migration、月次出力、Support IDによる個別解除は[Hosted利用制御の運用](hosted-usage-operations.md)に従います。この追加機能について本番接続・疎通確認は未実施です。既存の5分cleanup Cronは成功日とcost metadataの削除にも使用します。

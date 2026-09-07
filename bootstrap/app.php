@@ -14,6 +14,7 @@ use JournalingPostServer\Http\JsonResponse;
 use JournalingPostServer\Http\PrivacyPolicyAction;
 use JournalingPostServer\Http\RegisterInstallationAction;
 use JournalingPostServer\Installation\InstallationRepository;
+use JournalingPostServer\Installation\PlayIntegrity;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
@@ -33,7 +34,7 @@ $configuration = require __DIR__ . '/config.php';
  *
  * @return callable(?Analyzer): App<null>
  */
-return static function (?Analyzer $analyzer = null) use ($configuration): App {
+return static function (?Analyzer $analyzer = null, ?PlayIntegrity $integrity = null) use ($configuration): App {
     $databaseConfiguration = $configuration['database'];
     $connection = null;
 
@@ -59,7 +60,10 @@ return static function (?Analyzer $analyzer = null) use ($configuration): App {
 
     $app->post(
         '/v1/installations',
-        new RegisterInstallationAction($installations),
+        new RegisterInstallationAction($installations, $integrity ?? new PlayIntegrity(
+            $configuration['integrity']['packageName'],
+            $configuration['integrity']['credentialsFile'],
+        )),
     );
     $app->post(
         '/v1/analyses',

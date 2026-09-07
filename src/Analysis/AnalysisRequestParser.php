@@ -61,6 +61,31 @@ final class AnalysisRequestParser
         [$periodStart, $periodEnd] = self::parsePeriod($payload, $violations);
         $entries = self::parseEntries($payload, $violations);
 
+        $analysisDate = $payload->analysisDate ?? null;
+        $date = is_string($analysisDate) && preg_match('/\A[0-9]{8}\z/', $analysisDate) === 1
+            ? DateTimeImmutable::createFromFormat('!Ymd', $analysisDate, new DateTimeZone('UTC'))
+            : false;
+        if ($date === false || $date->format('Ymd') !== $analysisDate) {
+            $violations[] = 'analysisDate: must be a calendar date in yyyyMMdd format.';
+        } else {
+            $times = [];
+            foreach ($entries as $index => $entry) {
+                $times[] = $entry->recordedAt;
+                if (
+                    $entry->recordedAt < $date->modify('-24 hours')
+                    || $entry->recordedAt > $date->modify('+24 hours')
+                ) {
+                    $violations[] = sprintf(
+                        'entries[%d].recordedAt: must be within 24 hours of analysisDate at UTC midnight.',
+                        $index,
+                    );
+                }
+            }
+            if ($times !== [] && max($times) > min($times)->modify('+24 hours')) {
+                $violations[] = 'entries: recordedAt span must not exceed 24 hours.';
+            }
+        }
+
         if ($violations !== []) {
             throw new ApiException(
                 422,
@@ -70,7 +95,7 @@ final class AnalysisRequestParser
             );
         }
 
-        return new AnalysisRequest($periodStart, $periodEnd, $entries);
+        return new AnalysisRequest($periodStart, $periodEnd, $entries, $analysisDate);
     }
 
     /**
