@@ -127,7 +127,6 @@ final class OpenAiAnalyzer implements Analyzer
             throw self::providerUnavailable();
         }
 
-        $calledAt = (new DateTimeImmutable('now'))->format('Y-m-d H:i:s.u');
         try {
             $result = $this->transport->post(
                 self::ENDPOINT,
@@ -141,8 +140,8 @@ final class OpenAiAnalyzer implements Analyzer
             // requestはOpenAIへ到達していない。確定失敗として扱う。
             throw self::providerUnavailable();
         } catch (OpenAiUnconfirmedException $exception) {
-            $this->lastCall = ['calledAt' => $calledAt, 'model' => null,
-                'inputTokens' => null, 'cachedInputTokens' => null, 'outputTokens' => null];
+            $this->lastCall = ['model' => null, 'inputTokens' => null,
+                'cachedInputTokens' => null, 'outputTokens' => null];
             // 送信後に結果を確認できない。呼び出し元で再試行可能にする。
             throw new AnalysisResultUnconfirmedException(
                 $exception->timedOut()
@@ -155,7 +154,7 @@ final class OpenAiAnalyzer implements Analyzer
         $payload = json_decode($result->body, true);
         $usage = is_array($payload) ? ($payload['usage'] ?? null) : null;
         $model = is_array($payload) ? ($payload['model'] ?? null) : null;
-        $this->lastCall = ['calledAt' => $calledAt,
+        $this->lastCall = [
             'model' => is_string($model) && preg_match('/\A[A-Za-z0-9._:\/-]{1,128}\z/', $model) === 1 ? $model : null,
             'inputTokens' => null, 'cachedInputTokens' => null, 'outputTokens' => null];
         if (

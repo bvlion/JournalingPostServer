@@ -405,7 +405,7 @@ final class AnalysisRequestParserTest extends TestCase
 
         try {
             $payload->analysisDate = '20260829';
-            AnalysisRequestParser::parse($payload, new \DateTimeImmutable('2026-08-29T00:00:00Z'));
+            AnalysisRequestParser::parse($payload);
         } catch (ApiException $exception) {
             self::assertSame(422, $exception->status());
             self::assertSame(
@@ -504,7 +504,6 @@ final class AnalysisRequestParserTest extends TestCase
                 false,
                 flags: JSON_THROW_ON_ERROR,
             ),
-            \DateTimeImmutable::createFromFormat('!Ymd', $payload['analysisDate']),
         );
     }
 

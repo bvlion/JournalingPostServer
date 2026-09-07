@@ -81,6 +81,18 @@ final class CreateAnalysisAction
         $analysisRequest = self::readAnalysisRequest($request);
 
         $now = new DateTimeImmutable('now');
+        $today = $now->setTimezone(new DateTimeZone('Asia/Tokyo'))->setTime(0, 0);
+        if (
+            $analysisRequest->analysisDate > $today->format('Ymd')
+            || $analysisRequest->analysisDate < $today->modify('-6 days')->format('Ymd')
+        ) {
+            throw new ApiException(
+                422,
+                'validation_error',
+                'The request does not satisfy the analysis request contract.',
+                ['analysisDate: must be within today and the previous six days in JST.'],
+            );
+        }
         // 失効した本文を返さないよう、判定の前に削除する。requestが来ない
         // 期間の削除はXServer Cron（bin/prune-expired-analyses.php）が行う。
         $this->analysisRequests->purgeExpired($now);

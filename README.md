@@ -94,7 +94,7 @@ cp config/analysis-instruction.example.txt config/analysis-instruction.txt
 
 `config/analysis-instruction.example.txt`はローカル開発・テスト・`make check`用の架空値のひな形で、実データを含みません。
 
-同じJournalEntry入力で解析指示を比較する場合は、APIのinstallation登録やidempotencyを経由せず、ローカル比較専用CLIからOpenAIを呼び出します。入力は`POST /v1/analyses`と同じrequest JSONです。ひな形を別ファイルへコピーして固定し、解析指示だけを編集して同じコマンドを繰り返してください。CLIはDBへ接続せず、結果本文を標準出力にだけ表示します。入力・prompt・結果をファイルやDBへ自動保存しません。
+同じJournalEntry入力で解析指示を比較する場合は、APIのinstallation登録やidempotencyを経由せず、ローカル比較専用CLIからOpenAIを呼び出します。入力は`POST /v1/analyses`と同じrequest JSONです。Hosted HTTP APIだけに適用するJST直近7日の受付制限はlocal analysis CLIには適用しません。ひな形を別ファイルへコピーして固定し、解析指示だけを編集して同じコマンドを繰り返してください。CLIはDBへ接続せず、結果本文を標準出力にだけ表示します。入力・prompt・結果をファイルやDBへ自動保存しません。
 
 ```shell
 cp config/local-analysis-request.example.json local-analysis-request.json

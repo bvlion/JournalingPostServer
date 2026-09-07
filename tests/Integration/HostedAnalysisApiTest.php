@@ -134,6 +134,26 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         );
     }
 
+    public function testHostedAnalysisRestrictsAnalysisDateToCurrentSevenJstDays(): void
+    {
+        $apiKey = $this->register();
+        foreach (['-7 days', '+1 day'] as $modifier) {
+            $date = new DateTimeImmutable($modifier, new \DateTimeZone('Asia/Tokyo'));
+            $payload = self::requestPayload();
+            $payload['analysisDate'] = $date->format('Ymd');
+            foreach ($payload['entries'] as &$entry) {
+                $entry['recordedAt'] = $date->format('Y-m-d') . 'T01:00:00Z';
+            }
+            unset($entry);
+
+            $response = $this->analyse($apiKey, key: self::OTHER_KEY, payload: $payload);
+
+            self::assertSame(422, $response->getStatusCode());
+            self::assertSame('validation_error', self::payload($response)['error']['code']);
+        }
+        self::assertSame(0, $this->analyzer->callCount);
+    }
+
     /**
      * responseがnetworkで失われた場合の再送。AIを再度呼ばずに同じ結果を返す。
      */

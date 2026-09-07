@@ -53,7 +53,7 @@ final class AnalysisRequestParser
         . '(?:Z|(?<offsetSign>[+-])(?<offsetHour>\d{2}):(?<offsetMinute>\d{2}))'
         . '\z/';
 
-    public static function parse(stdClass $payload, ?DateTimeImmutable $now = null): AnalysisRequest
+    public static function parse(stdClass $payload): AnalysisRequest
     {
         /** @var list<string> $violations */
         $violations = [];
@@ -68,11 +68,6 @@ final class AnalysisRequestParser
         if ($date === false || $date->format('Ymd') !== $analysisDate) {
             $violations[] = 'analysisDate: must be a calendar date in yyyyMMdd format.';
         } else {
-            $today = ($now ?? new DateTimeImmutable('now'))
-                ->setTimezone(new DateTimeZone('Asia/Tokyo'))->setTime(0, 0);
-            if ($analysisDate > $today->format('Ymd') || $analysisDate < $today->modify('-6 days')->format('Ymd')) {
-                $violations[] = 'analysisDate: must be within today and the previous six days in JST.';
-            }
             $times = [];
             foreach ($entries as $index => $entry) {
                 $times[] = $entry->recordedAt;

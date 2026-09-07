@@ -70,11 +70,11 @@ final class HostedUsageTest extends DatabaseTestCase
         $today = $now->setTimezone(new DateTimeZone('Asia/Tokyo'));
         $this->repository->recordSuccess($this->installationId, $today->modify('-6 days')->format('Ymd'));
         $this->repository->recordSuccess($this->installationId, $today->modify('-7 days')->format('Ymd'));
+        $insert = $this->connection->prepare('INSERT INTO provider_calls
+            (installation_id, recorded_at, model, input_tokens, cached_input_tokens, output_tokens)
+            VALUES (?, ?, NULL, NULL, NULL, NULL)');
         foreach (['-36 days', '-34 days'] as $offset) {
-            $this->repository->recordCall($this->installationId, [
-                'calledAt' => $now->modify($offset)->format('Y-m-d H:i:s.u'),
-                'model' => null, 'inputTokens' => null, 'cachedInputTokens' => null, 'outputTokens' => null,
-            ]);
+            $insert->execute([$this->installationId, $now->modify($offset)->format('Y-m-d H:i:s.u')]);
         }
         $this->repository->purgeExpired($now);
         self::assertSame(1, $this->connection->query('SELECT COUNT(*) FROM analysis_days')->fetchColumn());
@@ -84,11 +84,13 @@ final class HostedUsageTest extends DatabaseTestCase
     public function testMonthlyOutputsPreviousJstMonthAndDeletesOnlyThoseCalls(): void
     {
         $now = new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo'));
+        $insert = $this->connection->prepare('INSERT INTO provider_calls
+            (installation_id, recorded_at, model, input_tokens, cached_input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?)');
         foreach ([$now, $now->modify('first day of last month')->setTime(0, 0)] as $time) {
-            $this->repository->recordCall($this->installationId, [
-                'calledAt' => $time->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'),
-                'model' => 'example-model', 'inputTokens' => 100, 'cachedInputTokens' => 10, 'outputTokens' => 20,
-            ]);
+            $insert->execute([$this->installationId,
+                $time->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'),
+                'example-model', 100, 10, 20]);
         }
         [$status, $output] = $this->command(['monthly']);
         self::assertSame(0, $status);
@@ -116,10 +118,10 @@ final class HostedUsageTest extends DatabaseTestCase
     {
         $time = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tokyo')))
             ->modify('first day of last month')->setTime(0, 0)->setTimezone(new DateTimeZone('UTC'));
-        $this->repository->recordCall($this->installationId, [
-            'calledAt' => $time->format('Y-m-d H:i:s.u'), 'model' => null,
-            'inputTokens' => null, 'cachedInputTokens' => null, 'outputTokens' => null,
-        ]);
+        $this->connection->prepare('INSERT INTO provider_calls
+            (installation_id, recorded_at, model, input_tokens, cached_input_tokens, output_tokens)
+            VALUES (?, ?, NULL, NULL, NULL, NULL)')
+            ->execute([$this->installationId, $time->format('Y-m-d H:i:s.u')]);
         $process = proc_open(
             [PHP_BINARY, self::projectPath('bin/hosted-usage.php'), 'monthly'],
             [1 => ['file', '/dev/full', 'w'], 2 => ['pipe', 'w']],
@@ -146,8 +148,7 @@ final class HostedUsageTest extends DatabaseTestCase
         );
         $this->repository->recordSuccess($this->installationId, $date);
         $this->repository->recordCall($this->installationId, [
-            'calledAt' => $now->format('Y-m-d H:i:s.u'), 'model' => null,
-            'inputTokens' => null, 'cachedInputTokens' => null, 'outputTokens' => null,
+            'model' => null, 'inputTokens' => null, 'cachedInputTokens' => null, 'outputTokens' => null,
         ]);
         self::assertSame(1, $this->command(['unlock', $this->supportId, $date])[0]);
         self::assertSame(1, $this->connection->query('SELECT COUNT(*) FROM analysis_days')->fetchColumn());
@@ -161,8 +162,8 @@ final class HostedUsageTest extends DatabaseTestCase
     {
         foreach ([100, null] as $inputTokens) {
             $this->repository->recordCall($this->installationId, [
-                'calledAt' => (new DateTimeImmutable('now'))->format('Y-m-d H:i:s.u'), 'model' => 'example-model',
-                'inputTokens' => $inputTokens, 'cachedInputTokens' => $inputTokens === null ? null : 10,
+                'model' => 'example-model', 'inputTokens' => $inputTokens,
+                'cachedInputTokens' => $inputTokens === null ? null : 10,
                 'outputTokens' => $inputTokens === null ? null : 20,
             ]);
         }

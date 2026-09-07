@@ -48,7 +48,7 @@ final class AnalysisRequestRepository
         ($this->connection)()->prepare('DELETE FROM analysis_days WHERE analysis_date < :oldest')
             ->execute(['oldest' => $now->setTimezone(new DateTimeZone('Asia/Tokyo'))
                 ->modify('-6 days')->format('Ymd')]);
-        ($this->connection)()->prepare('DELETE FROM provider_calls WHERE called_at < :oldest')
+        ($this->connection)()->prepare('DELETE FROM provider_calls WHERE recorded_at < :oldest')
             // 次回5分Cronまで含めて35日を超えないよう、5分前から削除する。
             ->execute(['oldest' => self::formatTimestamp($now->modify('-35 days +5 minutes'))]);
         $statement = ($this->connection)()->prepare(
@@ -405,10 +405,24 @@ final class AnalysisRequestRepository
     /** @param array<string, mixed> $call 本文を含まないproviderの観測値だけ。 */
     public function recordCall(string $installationId, array $call): void
     {
-        ($this->connection)()->prepare('INSERT INTO provider_calls
-            (installation_id, called_at, model, input_tokens, cached_input_tokens, output_tokens)
-            VALUES (?, ?, ?, ?, ?, ?)')
-            ->execute([$installationId, $call['calledAt'], $call['model'],
-                $call['inputTokens'], $call['cachedInputTokens'], $call['outputTokens']]);
+        $connection = ($this->connection)();
+        $connection->beginTransaction();
+        try {
+            // 月次処理と同じinstallation行をロックする。月次処理より後に進む
+            // writerは、その時点のUTC日時で翌月分として記録される。
+            $lock = $connection->prepare('SELECT id FROM installations WHERE id = ? FOR UPDATE');
+            $lock->execute([$installationId]);
+            $connection->prepare('INSERT INTO provider_calls
+                (installation_id, recorded_at, model, input_tokens, cached_input_tokens, output_tokens)
+                VALUES (?, UTC_TIMESTAMP(6), ?, ?, ?, ?)')
+                ->execute([$installationId, $call['model'], $call['inputTokens'],
+                    $call['cachedInputTokens'], $call['outputTokens']]);
+            $connection->commit();
+        } catch (Throwable $exception) {
+            if ($connection->inTransaction()) {
+                $connection->rollBack();
+            }
+            throw $exception;
+        }
     }
 }

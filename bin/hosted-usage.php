@@ -37,6 +37,12 @@ try {
         $database['password'],
     ))->create();
     $connection->beginTransaction();
+    if ($operation === 'monthly') {
+        // provider call writerも同じinstallation行を先にロックする。ここより前に
+        // 記録を始めたwriterを待ち、ここより後のwriterは翌月日時で記録させる。
+        $connection->query('SELECT id FROM installations ORDER BY id FOR UPDATE')
+            ->fetchAll(PDO::FETCH_COLUMN);
+    }
     $installationId = null;
     if ($supportId !== null) {
         $statement = $connection->prepare('SELECT id FROM installations WHERE api_key_hash = ? FOR UPDATE');
@@ -69,17 +75,10 @@ try {
         $start->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'),
         $end->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'),
     ];
-    $where = 'called_at >= ? AND called_at < ?';
+    $where = 'recorded_at >= ? AND recorded_at < ?';
     if ($installationId !== null) {
         $where .= ' AND installation_id = ?';
         $parameters[] = $installationId;
-    }
-    if ($operation === 'monthly') {
-        // 集計と削除の間に未集計callが入らないよう、前月範囲だけロックする。
-        // AUTO_INCREMENTの採番順とcommit順は一致しないためMAX(id)だけでは不十分。
-        $statement = $connection->prepare('SELECT id FROM provider_calls WHERE ' . $where . ' FOR UPDATE');
-        $statement->execute($parameters);
-        $statement->fetchAll(PDO::FETCH_COLUMN);
     }
     $statement = $connection->prepare('SELECT model, COUNT(*) AS provider_calls,
         SUM(input_tokens IS NULL OR output_tokens IS NULL) AS unknown_usage_calls,

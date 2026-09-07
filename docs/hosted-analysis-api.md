@@ -118,7 +118,7 @@ Google Play配布の正規アプリであることをPlay Integrity Standard req
 
 対象期間のJournalEntryを解析します。認証と`Idempotency-Key`が必要です。
 
-analysisDateはHosted専用の必須文字列（yyyyMMdd）です。JST当日を含む直近7日だけ受け付け、未来日・7日前以前は422にします。periodは結果の対象期間として維持し、利用制御には使用しません。Custom Webhookの契約には追加しません。
+analysisDateはHosted専用の必須文字列（yyyyMMdd）です。Hosted HTTP APIはJST当日を含む直近7日だけ受け付け、未来日・7日前以前は422にします。ローカル比較専用CLIは固定した過去入力を繰り返し使うため、この受付期間制限を適用しません。periodは結果の対象期間として維持し、利用制御には使用しません。Custom Webhookの契約には追加しません。
 
 すべてのrecordedAtはanalysisDateのUTC 00:00の前後24時間以内（境界を含む）、最古と最新の差も24時間以内とします。timezoneを送信・保存・推測せず、厳密なローカル日付一致は要求しません。下の例は2026-08-29が受付範囲内の日に使う架空値です。
 

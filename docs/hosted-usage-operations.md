@@ -24,7 +24,7 @@ php bin/hosted-usage.php show
 php bin/hosted-usage.php show <Support-ID>
 ```
 
-保持期間内の全体またはinstallation単位のprovider call数、usage不明件数、model別token量をJSONで出力します。成功済み日数とは別の値です。未到達が確定した通信失敗はcallへ数えず、応答を得たHTTPエラーと送信後の結果不明はcallへ数えます。buffer再送・429・検証拒否はcallを増やしません。HTTP処理が強制終了して記録処理まで到達しない場合のcallは、このServerの記録だけでは把握できません。請求確定額はprovider側でも照合します。
+保持期間内の全体またはinstallation単位のprovider call数、usage不明件数、model別token量をJSONで出力します。成功済み日数とは別の値です。provider callの記録日時は、providerの応答または結果不明を確認した後、月次処理と排他してDBへ記録したUTC日時です。前月末に開始して月次処理後に記録されたcallは当月分となり、次回集計へ入ります。未到達が確定した通信失敗はcallへ数えず、応答を得たHTTPエラーと送信後の結果不明はcallへ数えます。buffer再送・429・検証拒否はcallを増やしません。HTTP処理が強制終了して記録処理まで到達しない場合のcallは、このServerの記録だけでは把握できません。請求確定額はprovider側でも照合します。
 
 modelとusageはprovider応答から取得できた値だけ記録します。不明値はNULLであり0ではありません。本文、request、response、promptは保存しません。[Responses APIのusage定義](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)に従い、cached inputはinputの内数です。
 

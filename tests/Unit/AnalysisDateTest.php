@@ -4,14 +4,13 @@ declare(strict_types=1);
 
 namespace JournalingPostServer\Tests\Unit;
 
-use DateTimeImmutable;
 use JournalingPostServer\Analysis\AnalysisRequestParser;
 use JournalingPostServer\Http\ApiException;
 use PHPUnit\Framework\TestCase;
 
 final class AnalysisDateTest extends TestCase
 {
-    public function testJstCalendarAndRecordedAtBoundaries(): void
+    public function testCalendarFormatAndRecordedAtBoundaries(): void
     {
         $cases = [
             ['20260907', ['2026-09-06T00:00:00Z', '2026-09-07T00:00:00Z'], true],
@@ -20,8 +19,8 @@ final class AnalysisDateTest extends TestCase
             ['20260907', ['2026-09-08T00:00:00.000001Z'], false],
             ['20260907', ['2026-09-05T23:59:59.999999Z'], false],
             ['20260901', ['2026-09-01T00:00:00Z'], true],
-            ['20260831', ['2026-08-31T00:00:00Z'], false],
-            ['20260908', ['2026-09-08T00:00:00Z'], false],
+            ['20260831', ['2026-08-31T00:00:00Z'], true],
+            ['20260908', ['2026-09-08T00:00:00Z'], true],
             ['20260230', ['2026-03-02T00:00:00Z'], false],
             [20260907, ['2026-09-07T00:00:00Z'], false],
             [null, ['2026-09-07T00:00:00Z'], false],
@@ -34,7 +33,7 @@ final class AnalysisDateTest extends TestCase
                     $times,
                 )];
             try {
-                $request = AnalysisRequestParser::parse($payload, new DateTimeImmutable('2026-09-06T15:00:00Z'));
+                $request = AnalysisRequestParser::parse($payload);
                 self::assertTrue($isExpected);
                 self::assertSame($date, $request->analysisDate);
             } catch (ApiException $exception) {
@@ -42,5 +41,17 @@ final class AnalysisDateTest extends TestCase
                 self::assertSame(422, $exception->status());
             }
         }
+    }
+
+    public function testLocalAnalysisExampleAcceptsItsFixedPastDate(): void
+    {
+        $payload = json_decode(
+            (string) file_get_contents(dirname(__DIR__, 2) . '/config/local-analysis-request.example.json'),
+        );
+
+        $request = AnalysisRequestParser::parse($payload);
+
+        self::assertSame('20260829', $request->analysisDate);
+        self::assertCount(2, $request->entries);
     }
 }
