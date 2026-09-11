@@ -200,7 +200,7 @@ analysisDateはHosted専用の必須文字列（yyyyMMdd）です。Hosted HTTP 
 
 Android側`AnalysisResult`が必要とする「対象期間」「解析日時」「解析結果」はこの応答から作れます。「解析方法 / 種別」はAndroid側が持つ区分（Hosted / Custom Webhook）であり、Serverは指定しません。`model`は補足情報です。
 
-振り返り本文を単一の`text`にしているのは、Android側`AnalysisResult`が本文を1つのプレーンテキストとして持つためです。`text`には良かったこと / 嫌だったこと / 感情 / 要約 / AI アドバイスの5項目を固定順で整形して入れます（good / badは箇条書き、空なら「なし」）。将来の構造化はフィールド追加（互換）で行います。
+振り返り本文を単一の`text`にしているのは、Android側`AnalysisResult`が本文を1つのプレーンテキストとして持つためです。`text`には要約 / 良かったこと / 嫌だったこと / 感情 / AI アドバイスの5項目を固定順で整形して入れます（good / badは箇条書き、空なら「なし」）。要約を本文先頭へ置くため、Android側はHosted固有の解析をせず、そのまま一覧プレビューに利用できます。将来の構造化はフィールド追加（互換）で行います。
 
 ## AI provider（OpenAI）
 

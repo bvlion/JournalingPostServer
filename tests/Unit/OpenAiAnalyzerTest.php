@@ -234,7 +234,8 @@ RULES;
 
     /**
      * OpenAIの構造化5項目を欠落させずAnalysis.textへ変換する。
-     * good / badは箇条書き、空配列は「なし」。JSON文字列をそのままbodyにしない。
+     * 要約から始まり、good / badは箇条書き、空配列は「なし」。JSON文字列を
+     * そのままbodyにしない。
      */
     public function testStructuredResultIsFormattedWithoutLosingAnyOfTheFiveItems(): void
     {
@@ -251,21 +252,14 @@ RULES;
         self::assertSame('gpt-5.6-luna', $analysis->model);
 
         $text = $analysis->text;
-        self::assertStringContainsString(
-            "【良かったこと】\n- 朝の散歩ができた\n- 家族と夕食をとった",
-            $text,
-        );
-        self::assertStringContainsString("【嫌だったこと】\nなし", $text);
-        self::assertStringContainsString(
-            "【要約】\n日中は在宅で作業し、夜に家族と過ごした。",
-            $text,
-        );
-        self::assertStringContainsString(
-            "【AI アドバイス】\n在宅作業の合間に短い休憩を挟むと良いかもしれません。",
-            $text,
-        );
-        self::assertStringContainsString(
-            "【感情】\nポジティブ（71 / 100）",
+        self::assertSame(
+            implode("\n\n", [
+                "【要約】\n日中は在宅で作業し、夜に家族と過ごした。",
+                "【良かったこと】\n- 朝の散歩ができた\n- 家族と夕食をとった",
+                "【嫌だったこと】\nなし",
+                "【感情】\nポジティブ（71 / 100）",
+                "【AI アドバイス】\n在宅作業の合間に短い休憩を挟むと良いかもしれません。",
+            ]),
             $text,
         );
         self::assertStringNotContainsString('【タグ】', $text);

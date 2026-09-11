@@ -44,7 +44,7 @@ API契約は[Hosted解析API契約](docs/hosted-analysis-api.md)にまとめて�
 
 `POST /v1/analyses`は`Authorization: Bearer <API key>`と`Idempotency-Key`を必要とします。request / responseのschema、error契約、retry / idempotency、保持期間は[Hosted解析API契約](docs/hosted-analysis-api.md)を参照してください。
 
-`POST /v1/analyses`は認証・検証・idempotencyを通したうえでOpenAI Responses APIを呼び、良かったこと / 嫌だったこと / 感情（タイプと0〜100のスコア） / 要約 / AI アドバイスの5項目を整形したプレーンテキストを返します。provider利用不能は`503 analysis_unavailable`、送信後に結果を確定できない失敗（timeout等）は`504 analysis_timeout` / `500 internal_error`で、結果不明もclaimを解放して再試行可能にします。成功済みの同じ対象日は429で拒否します。
+`POST /v1/analyses`は認証・検証・idempotencyを通したうえでOpenAI Responses APIを呼び、要約 / 良かったこと / 嫌だったこと / 感情（タイプと0〜100のスコア） / AI アドバイスの5項目を整形したプレーンテキストを返します。provider利用不能は`503 analysis_unavailable`、送信後に結果を確定できない失敗（timeout等）は`504 analysis_timeout` / `500 internal_error`で、結果不明もclaimを解放して再試行可能にします。成功済みの同じ対象日は429で拒否します。
 
 ## プライバシーポリシー
 

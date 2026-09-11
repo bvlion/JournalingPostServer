@@ -87,10 +87,10 @@ final class OpenAiAnalyzer implements Analyzer
 
     /** 構造化結果をAnalysis.textへ整形するときの、項目の固定順と見出し。 */
     private const TEXT_SECTIONS = [
+        'summary' => '要約',
         'good' => '良かったこと',
         'bad' => '嫌だったこと',
         'emotion' => '感情',
-        'summary' => '要約',
         'advice' => 'AI アドバイス',
     ];
 
