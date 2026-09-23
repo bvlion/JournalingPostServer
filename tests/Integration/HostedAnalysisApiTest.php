@@ -679,7 +679,7 @@ final class HostedAnalysisApiTest extends DatabaseTestCase
         $analysis = self::payload($first)['analysis'];
 
         self::assertSame(200, $first->getStatusCode());
-        self::assertSame('gpt-5.6-luna', $analysis['model']);
+        self::assertSame('gpt-6-luna', $analysis['model']);
         self::assertStringStartsWith('【要約】', $analysis['text']);
         self::assertStringContainsString('【良かったこと】', $analysis['text']);
         self::assertStringContainsString('【感情】', $analysis['text']);
