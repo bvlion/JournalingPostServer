@@ -50,7 +50,7 @@ RULES;
     {
         $payload = $this->analyzer()->buildRequestPayload(self::request());
 
-        self::assertSame('gpt-5.6-luna', $payload['model']);
+        self::assertSame('gpt-6-luna', $payload['model']);
         self::assertSame(['effort' => 'none'], $payload['reasoning']);
         self::assertSame(800, $payload['max_output_tokens']);
         self::assertSame('low', $payload['text']['verbosity']);
@@ -249,7 +249,7 @@ RULES;
 
         $analysis = $this->analyzer()->analyze(self::request());
 
-        self::assertSame('gpt-5.6-luna', $analysis->model);
+        self::assertSame('gpt-6-luna', $analysis->model);
 
         $text = $analysis->text;
         self::assertSame(

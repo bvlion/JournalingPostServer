@@ -40,7 +40,7 @@ final class OpenAiAnalyzer implements Analyzer
     public const ENDPOINT = 'https://api.openai.com/v1/responses';
 
     // 既定値。変更しない。
-    public const MODEL = 'gpt-5.6-luna';
+    public const MODEL = 'gpt-6-luna';
     public const REASONING_EFFORT = 'none';
     public const MAX_OUTPUT_TOKENS = 800;
     public const VERBOSITY = 'low';
